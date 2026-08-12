@@ -1,0 +1,8 @@
+{
+  "id": "clipboard",
+  "name": "Clipboard",
+  "version": "1.0",
+  "description": "Lectura y escritura del portapapeles.",
+  "module": "plugins.clipboard",
+  "safe_delete": false
+}

@@ -1,0 +1,1 @@
+"""JARVIS Browser plugin."""

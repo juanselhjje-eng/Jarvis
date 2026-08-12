@@ -1,0 +1,8 @@
+{
+  "id": "browser",
+  "name": "Browser",
+  "version": "1.0",
+  "description": "Navegación web cuando el usuario la solicita.",
+  "module": "plugins.browser",
+  "safe_delete": false
+}
