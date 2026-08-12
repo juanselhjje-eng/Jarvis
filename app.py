@@ -9,12 +9,12 @@ install_computer_controls()
 install_computer_mode()
 register_builtin_capabilities()
 
-# Extended AI gateway: keeps the existing text/tool council and adds multimodal
-# capabilities (vision/image generation) behind the same API-key configuration.
+# Extended AI gateway: keeps multimodal capabilities and the multi-model council,
+# while using an adaptive fast path for ordinary conversation.
 try:
     import core.orchestrator as _orchestrator
-    from providers.ai_gateway_manager import AIGatewayManager
-    _orchestrator.MultiAIManager = AIGatewayManager
+    from core.latency_manager import LatencyAIGatewayManager
+    _orchestrator.MultiAIManager = LatencyAIGatewayManager
 except Exception:
     # Optional SDKs must never prevent local/offline JARVIS from starting.
     pass
