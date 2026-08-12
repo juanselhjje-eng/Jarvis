@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-"""Conversation continuity patch for JARVIS.
-
-Keeps short follow-up answers attached to the task/question that produced them.
-It does not replace the LLM's reasoning; it supplies explicit conversational state
-so replies such as "en el escritorio", "el segundo", "sí" or "ese" are not treated
-as unrelated new conversations.
-"""
+"""Conversation continuity and agent-policy bridge for JARVIS."""
 
 import re
 import threading
@@ -42,7 +36,6 @@ def _is_short_followup(text: str) -> bool:
         return False
     if value in {"hola", "buenas", "gracias", "cancelar", "cancela", "salir", "adiós", "adios"}:
         return False
-    # Common elliptical answers/references that depend strongly on prior context.
     markers = (
         "sí", "si", "no", "ahí", "ahi", "ese", "esa", "eso", "este", "esta",
         "el primero", "el segundo", "el tercero", "la primera", "la segunda",
@@ -58,9 +51,8 @@ def install() -> None:
     if _installed:
         return
 
-    # Import here so app.py can install the bridge before MainWindow constructs
-    # its Orchestrator instance.
     from core.orchestrator import Orchestrator
+    from core.agent_brain import system_extension
 
     original_handle = Orchestrator.handle
     if getattr(original_handle, "_jarvis_context_bridge", False):
@@ -71,6 +63,18 @@ def install() -> None:
         user_text = str(text or "").strip()
         pending = _states.get(self)
         injected = False
+        policy_injected = False
+
+        # The policy is injected into the current system context instead of
+        # replacing the orchestrator. This keeps the patch compatible with the
+        # existing tool loop, memory and multi-IA council.
+        try:
+            policy_marker = "ARQUITECTURA DE AGENTE JARVIS"
+            if self.history and not any(policy_marker in str(x.get("content", "")) for x in self.history if x.get("role") == "system"):
+                self.history.insert(1, {"role": "system", "content": system_extension()})
+                policy_injected = True
+        except Exception:
+            policy_injected = False
 
         if pending and _is_short_followup(user_text):
             context_note = (
@@ -85,7 +89,7 @@ def install() -> None:
                 "acción usando las herramientas reales y verifica el resultado."
             )
             try:
-                self.history.insert(1, {"role": "system", "content": context_note})
+                self.history.insert(2 if policy_injected else 1, {"role": "system", "content": context_note})
                 injected = True
             except Exception:
                 injected = False
@@ -95,10 +99,16 @@ def install() -> None:
         finally:
             if injected:
                 try:
-                    # Remove only the bridge message; preserve the real conversation.
-                    for i in range(1, min(4, len(self.history))):
-                        item = self.history[i]
+                    for i, item in enumerate(list(self.history)):
                         if item.get("role") == "system" and str(item.get("content", "")).startswith("CONTINUIDAD DE CONVERSACIÓN"):
+                            self.history.pop(i)
+                            break
+                except Exception:
+                    pass
+            if policy_injected:
+                try:
+                    for i, item in enumerate(list(self.history)):
+                        if item.get("role") == "system" and "ARQUITECTURA DE AGENTE JARVIS" in str(item.get("content", "")):
                             self.history.pop(i)
                             break
                 except Exception:
@@ -113,7 +123,6 @@ def install() -> None:
                     created_at=__import__("time").time(),
                 )
         elif pending and _is_short_followup(user_text):
-            # The follow-up was consumed unless JARVIS immediately asked another question.
             with _lock:
                 _states.pop(self, None)
         return result
