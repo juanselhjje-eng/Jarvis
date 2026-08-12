@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Conversation continuity and agent-policy bridge for JARVIS."""
+"""Conversation continuity, capability awareness and agent-policy bridge."""
 
 import re
 import threading
@@ -27,7 +27,7 @@ def _looks_like_question(text: str) -> bool:
     low = value.lower()
     if "?" in value or "¿" in value:
         return True
-    return bool(re.search(r"\b(dónde|donde|cuál|cual|qué|que|cómo|como|cuándo|cuando|quieres|quieres que|prefieres|elige|indica)\b", low))
+    return bool(re.search(r"\b(dónde|donde|cuál|cual|qué|que|cómo|como|cuándo|cuando|quieres|prefieres|elige|indica)\b", low))
 
 
 def _is_short_followup(text: str) -> bool:
@@ -44,6 +44,14 @@ def _is_short_followup(text: str) -> bool:
         "en windows", "en chrome", "en edge", "en google drive",
     )
     return any(value == marker or value.startswith(marker + " ") for marker in markers)
+
+
+def _capability_context() -> str:
+    try:
+        from plugins.registry import capability_registry
+        return capability_registry.prompt_summary()
+    except Exception:
+        return "CAPACIDADES DISPONIBLES: usa las herramientas registradas en el orquestador."
 
 
 def install() -> None:
@@ -64,51 +72,42 @@ def install() -> None:
         pending = _states.get(self)
         injected = False
         policy_injected = False
+        capabilities_injected = False
 
-        # The policy is injected into the current system context instead of
-        # replacing the orchestrator. This keeps the patch compatible with the
-        # existing tool loop, memory and multi-IA council.
         try:
             policy_marker = "ARQUITECTURA DE AGENTE JARVIS"
             if self.history and not any(policy_marker in str(x.get("content", "")) for x in self.history if x.get("role") == "system"):
                 self.history.insert(1, {"role": "system", "content": system_extension()})
                 policy_injected = True
+            cap_marker = "CAPACIDADES DISPONIBLES:"
+            if self.history and not any(cap_marker in str(x.get("content", "")) for x in self.history if x.get("role") == "system"):
+                self.history.insert(2 if policy_injected else 1, {"role": "system", "content": _capability_context()})
+                capabilities_injected = True
         except Exception:
-            policy_injected = False
+            pass
 
         if pending and _is_short_followup(user_text):
             context_note = (
                 "CONTINUIDAD DE CONVERSACIÓN — RESPUESTA A UNA PREGUNTA PENDIENTE:\n"
                 f"JARVIS preguntó: {pending.question}\n"
-                f"Contexto de la respuesta anterior: {pending.assistant_message[-1800:]}\n"
+                f"Contexto anterior: {pending.assistant_message[-1800:]}\n"
                 f"El usuario acaba de responder: {user_text}\n\n"
-                "INTERPRETACIÓN OBLIGATORIA:\n"
-                "Trata este mensaje como respuesta a la pregunta/tarea pendiente. "
-                "No cambies de tema ni inicies una tarea independiente. Si la respuesta "
-                "completa un parámetro (ruta, nombre, opción, archivo, etc.), continúa la "
-                "acción usando las herramientas reales y verifica el resultado."
+                "Trata este mensaje como respuesta a la tarea pendiente. No cambies de tema. "
+                "Completa el parámetro y continúa con las herramientas reales; después verifica el resultado."
             )
             try:
-                self.history.insert(2 if policy_injected else 1, {"role": "system", "content": context_note})
+                self.history.insert(3 if (policy_injected or capabilities_injected) else 1, {"role": "system", "content": context_note})
                 injected = True
             except Exception:
-                injected = False
+                pass
 
         try:
             result = original_handle(self, text, deep=deep)
         finally:
-            if injected:
+            for marker in ("CONTINUIDAD DE CONVERSACIÓN", "ARQUITECTURA DE AGENTE JARVIS", "CAPACIDADES DISPONIBLES:"):
                 try:
                     for i, item in enumerate(list(self.history)):
-                        if item.get("role") == "system" and str(item.get("content", "")).startswith("CONTINUIDAD DE CONVERSACIÓN"):
-                            self.history.pop(i)
-                            break
-                except Exception:
-                    pass
-            if policy_injected:
-                try:
-                    for i, item in enumerate(list(self.history)):
-                        if item.get("role") == "system" and "ARQUITECTURA DE AGENTE JARVIS" in str(item.get("content", "")):
+                        if item.get("role") == "system" and marker in str(item.get("content", "")):
                             self.history.pop(i)
                             break
                 except Exception:
@@ -117,11 +116,7 @@ def install() -> None:
         answer = str(result or "").strip()
         if _looks_like_question(answer):
             with _lock:
-                _states[self] = PendingContext(
-                    question=answer[:700],
-                    assistant_message=answer[:2200],
-                    created_at=__import__("time").time(),
-                )
+                _states[self] = PendingContext(answer[:700], answer[:2200], __import__("time").time())
         elif pending and _is_short_followup(user_text):
             with _lock:
                 _states.pop(self, None)
