@@ -10,6 +10,7 @@ def install() -> None:
         scroll, drag_mouse, double_click, hotkey, copy_selection, paste_text,
         focus_window, computer_observe,
     )
+    from tools.human_computer import click_at, click_text, inspect_ui
 
     additions = {
         "wait": {
@@ -58,6 +59,30 @@ def install() -> None:
             "function": double_click,
             "description": "Hace doble clic en la posición actual del cursor.",
             "parameters": {"button": {"type": "string", "description": "Botón del mouse."}},
+        },
+        "click_at": {
+            "function": click_at,
+            "description": "Hace clic en coordenadas concretas de la pantalla.",
+            "parameters": {
+                "x": {"type": "integer", "description": "Coordenada X."},
+                "y": {"type": "integer", "description": "Coordenada Y."},
+                "button": {"type": "string", "description": "left, right o middle."},
+                "clicks": {"type": "integer", "description": "Número de clics."},
+            },
+        },
+        "click_text": {
+            "function": click_text,
+            "description": "Busca un botón, menú o texto visible por su nombre y hace clic. Usa Windows UI Automation y OCR como respaldo; no requiere que JARVIS adivine coordenadas.",
+            "parameters": {
+                "text": {"type": "string", "description": "Texto o nombre visible del elemento, por ejemplo 'Juegos'."},
+                "window_title": {"type": "string", "description": "Título parcial opcional para limitar la búsqueda."},
+                "double": {"type": "boolean", "description": "True para doble clic."},
+            },
+        },
+        "inspect_ui": {
+            "function": inspect_ui,
+            "description": "Inspecciona controles visibles de Windows mediante UI Automation para planear clics y acciones.",
+            "parameters": {},
         },
         "hotkey": {
             "function": hotkey,
