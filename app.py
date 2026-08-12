@@ -1,11 +1,13 @@
 from core.context_bridge import install as install_context_bridge
 from tools.computer_bridge import install as install_computer_controls
+from core.computer_mode import install as install_computer_mode
 
 # Initialize deterministic infrastructure before the UI creates its Orchestrator.
 install_context_bridge()
 install_computer_controls()
+install_computer_mode()
 
-# V27: Spanish command deck + conversational continuity + human-like desktop controls.
+# V29: Spanish command deck + conversational continuity + human-like desktop controls.
 from ui.modern_main_window import run_app
 
 if __name__ == "__main__":
