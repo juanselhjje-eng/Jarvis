@@ -39,7 +39,66 @@ try:
 except Exception:
     pass
 
-from ui.modern_main_window import run_app
+from ui.modern_main_window import ModernWindow, run_app
+
+
+# ---------------------------------------------------------------------------
+# First-class browser workspace
+# ---------------------------------------------------------------------------
+# The browser lives inside JARVIS. It is not Chrome launched from a command:
+# it is another workspace the agent can use for web research, WebGL games,
+# browser audio and normal site interaction.
+try:
+    from ui.jarvis_browser import JarvisBrowser
+    from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel
+
+    _original_window_init = ModernWindow.__init__
+
+    def _jarvis_window_init(self):
+        _original_window_init(self)
+        self.browser = JarvisBrowser(self)
+        self.pages.addWidget(self.browser)
+
+        # Add a real NAVIGATOR item before the diagnostics/stretch area.
+        # Existing page indices and navigation keys stay aligned because the
+        # browser page is appended after the existing pages.
+        browser_btn = self.nav.get("browser")
+        if browser_btn is None:
+            browser_btn = __import__("PySide6.QtWidgets", fromlist=["QPushButton"]).QPushButton("◉  NAVEGADOR")
+            browser_btn.setObjectName("nav")
+            browser_btn.setCheckable(True)
+            browser_btn.clicked.connect(lambda checked: self.show_page("browser"))
+            self.nav["browser"] = browser_btn
+            side_layout = next(iter(self.nav.values())).parentWidget().layout()
+            side_layout.insertWidget(len(self.nav) - 1, browser_btn)
+
+        # Make the browser available to other runtime components without
+        # requiring an external browser process.
+        try:
+            self.router.browser = self.browser
+        except Exception:
+            pass
+
+    ModernWindow.__init__ = _jarvis_window_init
+
+    _original_show_page = ModernWindow.show_page
+
+    def _show_page(self, key):
+        if key == "browser":
+            keys = list(self.nav.keys())
+            if key in keys:
+                self.pages.setCurrentIndex(keys.index(key))
+                for k, b in self.nav.items():
+                    b.setChecked(k == key)
+                return
+        return _original_show_page(self, key)
+
+    ModernWindow.show_page = _show_page
+except Exception:
+    # Browser remains optional: the normal JARVIS UI must still boot if
+    # QtWebEngine is unavailable.
+    pass
+
 
 if __name__ == "__main__":
     raise SystemExit(run_app())
