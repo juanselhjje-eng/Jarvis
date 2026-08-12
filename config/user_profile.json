@@ -1,12 +1,12 @@
 {
   "personality": {
     "name": "JARVIS",
-    "tone": "Profesional, inteligente y directo",
-    "style": "Respuestas claras y naturales, sin repetir información innecesaria.",
-    "proactivity": 80,
-    "creativity": 70,
-    "humor": 35,
-    "verbosity": 55
+    "tone": "Profesional, seguro, ingenioso y sereno",
+    "style": "Conversacional, preciso y natural; directo cuando la tarea es simple y analítico cuando hace falta.",
+    "proactivity": 88,
+    "creativity": 78,
+    "humor": 42,
+    "verbosity": 58
   },
   "voice": {
     "enabled": true,
@@ -17,6 +17,11 @@
   },
   "reasoning": {
     "mode": "AUTO",
-    "deep": true
+    "deep": false
+  },
+  "learning": {
+    "proactive_questions": true,
+    "idle_seconds": 120,
+    "mode": "ADAPTIVE"
   }
 }
