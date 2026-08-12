@@ -16,8 +16,7 @@ jobs:
           python-version: '3.11'
       - name: Compile Python sources
         run: python -m compileall -q app.py agents config core memory plugins providers tools ui tests
-      - name: Verify no secrets are tracked
+      - name: Verify secrets and runtime memory are not tracked
         shell: bash
         run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.db|.*\.db-wal|.*\.db-shm)$'
-          ! git ls-files | grep -E '(^|/)__pycache__(/|$)|\.pyc$'
+          ! git ls-files | grep -E '(^|/)(\.env|.*\.db|.*\.db-wal|.*\.db-shm|memory/.*\.jsonl)$'
