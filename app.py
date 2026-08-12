@@ -1,10 +1,11 @@
 from core.context_bridge import install as install_context_bridge
+from tools.computer_bridge import install as install_computer_controls
 
-# Load conversational continuity before the UI creates its Orchestrator.
+# Initialize deterministic infrastructure before the UI creates its Orchestrator.
 install_context_bridge()
+install_computer_controls()
 
-# V26: redesigned command deck. The legacy UI remains available as ui.main_window,
-# but the application now starts from the repaired Spanish interface.
+# V27: Spanish command deck + conversational continuity + human-like desktop controls.
 from ui.modern_main_window import run_app
 
 if __name__ == "__main__":
