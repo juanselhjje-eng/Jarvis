@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-"""Human-like Windows computer controls.
-
-These functions intentionally operate through the normal desktop input layer
-instead of arbitrary shell commands. They are small, composable primitives so
-JARVIS can observe, act, wait, and verify like a user operating a PC.
-"""
+"""Human-like Windows observation and desktop controls."""
 
 import ctypes
 import os
@@ -32,14 +27,14 @@ def wait(seconds: float = 0.5) -> str:
 def get_active_window() -> str:
     if os.name != "nt":
         return "Sistema no Windows."
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
     if not hwnd:
         return "No pude identificar la ventana activa."
-    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+    length = user32.GetWindowTextLengthW(hwnd)
     buf = ctypes.create_unicode_buffer(length + 1)
-    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-    title = buf.value.strip() or "(sin título)"
-    return f"VENTANA ACTIVA: {title} | HWND={hwnd}"
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return f"VENTANA ACTIVA: {buf.value.strip() or '(sin título)'} | HWND={hwnd}"
 
 
 def get_mouse_position() -> str:
@@ -49,20 +44,17 @@ def get_mouse_position() -> str:
 
 
 def screenshot(path: str = "workspace/screen.png") -> str:
-    """Capture the current desktop for later vision/OCR processing."""
     pyautogui = _pyautogui()
     target = Path(os.path.expandvars(os.path.expanduser(path)))
     if not target.is_absolute():
         from config.settings import WORKSPACE_DIR
         target = WORKSPACE_DIR / target
     target.parent.mkdir(parents=True, exist_ok=True)
-    image = pyautogui.screenshot()
-    image.save(str(target))
+    pyautogui.screenshot().save(str(target))
     return f"Captura de pantalla guardada: {target}"
 
 
 def screen_ocr(path: str = "workspace/screen.png") -> str:
-    """Run optional OCR on a screenshot. Returns a useful fallback if OCR is absent."""
     target = Path(os.path.expandvars(os.path.expanduser(path)))
     if not target.is_absolute():
         from config.settings import WORKSPACE_DIR
@@ -72,11 +64,10 @@ def screen_ocr(path: str = "workspace/screen.png") -> str:
     try:
         import pytesseract
         from PIL import Image
-        text = pytesseract.image_to_string(Image.open(target), lang="spa+eng")
-        text = text.strip()
+        text = pytesseract.image_to_string(Image.open(target), lang="spa+eng").strip()
         return text[:12000] if text else "No encontré texto legible en la pantalla."
     except ImportError:
-        return "OCR no está instalado. La captura sí está disponible; instala pytesseract y Tesseract OCR para lectura automática."
+        return "OCR no está instalado. La captura sí está disponible."
     except Exception as exc:
         return f"No pude ejecutar OCR: {exc}"
 
@@ -88,11 +79,11 @@ def scroll(amount: int) -> str:
     return f"Desplazamiento ejecutado: {value}."
 
 
-def drag_mouse(x: int, y: int, duration: float = 0.35, button: str = "left") -> str:
+def drag_mouse(x1: int, y1: int, x2: int, y2: int, duration: float = 0.35, button: str = "left") -> str:
     pyautogui = _pyautogui()
-    pyautogui.moveTo(int(x), int(y), duration=0.12)
-    pyautogui.dragTo(int(x), int(y), duration=max(0.05, float(duration)), button=button)
-    return f"Arrastre ejecutado hasta ({int(x)}, {int(y)})."
+    pyautogui.moveTo(int(x1), int(y1), duration=0.12)
+    pyautogui.dragTo(int(x2), int(y2), duration=max(0.05, float(duration)), button=button)
+    return f"Arrastre ejecutado: ({int(x1)}, {int(y1)}) → ({int(x2)}, {int(y2)})."
 
 
 def double_click(button: str = "left") -> str:
@@ -116,8 +107,7 @@ def copy_selection() -> str:
     time.sleep(0.08)
     try:
         import pyperclip
-        value = pyperclip.paste()
-        return f"Texto copiado: {str(value)[:8000]}"
+        return f"Texto copiado: {str(pyperclip.paste())[:8000]}"
     except ImportError:
         return "Selección copiada al portapapeles."
 
@@ -135,7 +125,6 @@ def paste_text(text: str) -> str:
 
 
 def focus_window(title_fragment: str) -> str:
-    """Focus a visible top-level window by a title fragment using Win32."""
     if os.name != "nt":
         return "Esta función requiere Windows."
     needle = str(title_fragment).strip().lower()
@@ -143,7 +132,6 @@ def focus_window(title_fragment: str) -> str:
         return "Necesito parte del título de la ventana."
     user32 = ctypes.windll.user32
     matches = []
-
     EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     def callback(hwnd, _):
@@ -161,13 +149,12 @@ def focus_window(title_fragment: str) -> str:
     if not matches:
         return f"No encontré una ventana visible que contenga '{title_fragment}'."
     hwnd, title = matches[0]
-    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.ShowWindow(hwnd, 9)
     user32.SetForegroundWindow(hwnd)
     return f"Ventana enfocada: {title}."
 
 
 def computer_observe() -> str:
-    """Return a compact desktop observation suitable for the next planning step."""
     active = get_active_window()
     cursor = get_mouse_position()
     shot = screenshot("workspace/observations/latest.png")
