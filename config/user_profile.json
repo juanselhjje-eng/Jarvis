@@ -10,9 +10,10 @@
   },
   "voice": {
     "enabled": true,
+    "backend": "neural",
     "rate": 185,
     "volume": 1.0,
-    "voice_id": ""
+    "voice_id": "es-CO-GonzaloNeural"
   },
   "reasoning": {
     "mode": "AUTO",
