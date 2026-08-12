@@ -2,15 +2,10 @@ from PySide6.QtCore import QObject, Signal
 import os
 import threading
 import queue
-import time
 
 
 class Speaker(QObject):
-    """Natural neural speaker with local fallback.
-
-    Default backend: Edge neural TTS using a stock Colombian Spanish voice.
-    The voice is configurable and is not intended to imitate any real person.
-    """
+    """JARVIS TTS robusto: voz continua con fallback automático."""
 
     state_changed = Signal(bool)
     speaking_changed = Signal(bool)
@@ -89,13 +84,23 @@ class Speaker(QObject):
             self._engine.say(str(text))
             self._engine.runAndWait()
 
+    def _try_neural(self, text):
+        """Intenta voz neural sin convertir un fallo temporal en estado permanente."""
+        if not self._neural or self.backend == "local":
+            return False
+        try:
+            self.speaking_changed.emit(True)
+            ok = bool(self._neural.speak_neural(text))
+            return ok
+        except Exception:
+            return False
+        finally:
+            self.speaking_changed.emit(False)
+
     def _speech_loop(self):
         neural_ok = self._init_neural()
         if not neural_ok:
-            try:
-                self._engine = self._create_engine()
-            except Exception:
-                self._engine = None
+            self._restart_engine()
         self._ready.set()
 
         while not self._stop_event.is_set():
@@ -110,24 +115,21 @@ class Speaker(QObject):
             text, rate, volume, voice_id = item
             success = False
             try:
-                if self.backend != "local" and self._neural:
-                    self.speaking_changed.emit(True)
-                    success = self._neural.speak_neural(text)
-                    if not success:
-                        # Cloud/network/TTS failure: gracefully fall back to local speech.
-                        self.backend = "local"
+                # No desactives el backend neural después de un fallo: el fallo puede
+                # ser temporal. Cada respuesta vuelve a intentarlo y luego cae a local.
+                success = self._try_neural(text)
                 if not success:
-                    self._speak_local(text, rate, volume, voice_id)
-                    success = True
-            except Exception:
-                # Rebuild local engine once. This prevents the old "works once, then
-                # stops talking" failure mode of pyttsx3 on Windows.
-                try:
-                    if self._restart_engine():
+                    try:
                         self._speak_local(text, rate, volume, voice_id)
                         success = True
-                except Exception:
-                    success = False
+                    except Exception:
+                        # pyttsx3 puede quedar bloqueado después de una reproducción;
+                        # reconstruimos el motor y repetimos una sola vez.
+                        if self._restart_engine():
+                            self._speak_local(text, rate, volume, voice_id)
+                            success = True
+            except Exception:
+                success = False
             finally:
                 self.speaking_changed.emit(False)
                 self._queue.task_done()
@@ -141,9 +143,13 @@ class Speaker(QObject):
             self._rate = max(80, min(300, int(cfg.get("rate", 185))))
             self._volume = max(0.0, min(1.0, float(cfg.get("volume", 1.0))))
             self._voice_id = cfg.get("voice_id", "") or self._voice_id
-            self.backend = str(cfg.get("backend", self.backend)).lower()
-            if self.backend == "local" and self._engine:
+            requested = str(cfg.get("backend", self.backend)).lower()
+            if requested in {"neural", "local"}:
+                self.backend = requested
+            if self.backend == "local":
                 self._restart_engine()
+            elif self._neural is None:
+                self._init_neural()
         except Exception:
             pass
 
@@ -155,7 +161,9 @@ class Speaker(QObject):
             return False
         if len(text) > 6500:
             text = text[:6500] + "…"
-        # Never allow stale replies to build a huge speech backlog.
+
+        # Conserva siempre las respuestas más recientes; evita que una respuesta
+        # lenta bloquee las siguientes durante una conversación larga.
         if self._queue.qsize() >= 5:
             try:
                 while self._queue.qsize() >= 3:
