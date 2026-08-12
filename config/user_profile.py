@@ -8,12 +8,12 @@ PROFILE_FILE = Path(__file__).resolve().parent / "user_profile.json"
 DEFAULT_PROFILE = {
     "personality": {
         "name": "JARVIS",
-        "tone": "Profesional, inteligente y directo",
-        "style": "Respuestas claras y naturales, sin repetir información innecesaria.",
-        "proactivity": 80,
-        "creativity": 70,
-        "humor": 35,
-        "verbosity": 55,
+        "tone": "Profesional, seguro, ingenioso y sereno",
+        "style": "Conversacional, preciso y natural; directo cuando la tarea es simple y analítico cuando hace falta.",
+        "proactivity": 88,
+        "creativity": 78,
+        "humor": 42,
+        "verbosity": 58,
     },
     "voice": {
         "enabled": True,
@@ -23,7 +23,7 @@ DEFAULT_PROFILE = {
     },
     "reasoning": {
         "mode": "AUTO",
-        "deep": True,
+        "deep": False,
     },
     "learning": {
         "proactive_questions": True,
@@ -31,6 +31,7 @@ DEFAULT_PROFILE = {
         "mode": "ADAPTIVE",
     },
 }
+
 
 def load_profile() -> dict[str, Any]:
     try:
@@ -43,6 +44,7 @@ def load_profile() -> dict[str, Any]:
         pass
     return json.loads(json.dumps(DEFAULT_PROFILE))
 
+
 def _merge(dst, src):
     if not isinstance(src, dict):
         return
@@ -51,6 +53,7 @@ def _merge(dst, src):
             _merge(dst[k], v)
         else:
             dst[k] = v
+
 
 def save_profile(profile: dict[str, Any]) -> None:
     PROFILE_FILE.write_text(
