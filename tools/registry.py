@@ -114,15 +114,15 @@ TOOLS = {
             "duration": {"type": "number", "description": "Duración."},
         },
     },
-
     "run_program": {
         "function": run_program,
-        "description": "Ejecuta un programa de Windows sin shell y devuelve su resultado; bloquea comandos de borrado.",
+        "description": "Ejecuta un programa de Windows sin shell y devuelve su resultado. Acepta 'executable' y también 'path' por compatibilidad con llamadas antiguas; bloquea comandos de borrado.",
         "parameters": {
-            "executable": {"type": "string", "description": "Programa o ruta al ejecutable."},
+            "executable": {"type": "string", "description": "Programa o ruta al ejecutable. Puede omitirse si se proporciona path."},
             "arguments": {"type": "string", "description": "Argumentos del programa."},
             "working_dir": {"type": "string", "description": "Directorio de trabajo opcional."},
             "timeout": {"type": "integer", "description": "Tiempo máximo en segundos."},
+            "path": {"type": "string", "description": "Alias compatible con versiones anteriores: programa o ejecutable."},
         },
     },
     "edit_text_file": {
@@ -233,27 +233,49 @@ TOOLS = {
         "function": extract_archive, "description": "Extrae ZIP al workspace sin borrar el archivo comprimido.",
         "parameters": {"path":{"type":"string","description":"ZIP."},"destination":{"type":"string","description":"Destino."}},
     },
-
 }
+
 
 def get_tool(tool_name: str):
     item = TOOLS.get(tool_name)
     return item["function"] if item else None
 
+
 def list_tools():
     return {n: {"description": d["description"], "parameters": d["parameters"]} for n, d in TOOLS.items()}
+
+
+def _normalize_tool_args(tool_name: str, kwargs: dict) -> dict:
+    """Accept safe legacy argument names emitted by older prompts/models.
+
+    Old JARVIS versions used `path` for run_program while the current function
+    uses `executable`. Normalize it at the boundary so a stale model call does
+    not become a Python TypeError.
+    """
+    args = dict(kwargs or {})
+    if tool_name == "run_program":
+        if not args.get("executable") and args.get("path"):
+            args["executable"] = args["path"]
+        args.pop("path", None)
+        args.setdefault("arguments", "")
+        args.setdefault("working_dir", "")
+        args.setdefault("timeout", 30)
+    return args
+
 
 def execute_tool(tool_name: str, **kwargs):
     fn = get_tool(tool_name)
     if fn is None:
         raise ValueError(f"La herramienta '{tool_name}' no existe.")
-    return fn(**kwargs)
+    return fn(**_normalize_tool_args(tool_name, kwargs))
+
 
 def get_tool_descriptions():
     return "\n".join(
         f"- {n}: {d['description']} Parámetros: {', '.join(d['parameters']) or 'sin parámetros'}"
         for n, d in TOOLS.items()
     )
+
 
 def ollama_tool_definitions():
     return [{
