@@ -37,18 +37,30 @@ class Jarvis:
             "SYSTEM",
             f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.",
         )
-        threading.Thread(target=self.voice.speak, args=("Sistemas principales iniciados. Te escucho.",), daemon=True).start()
+
+        # Escucha de voz continua en segundo plano. Whisper solo activa una orden
+        # cuando detecta la palabra de activación configurada (Jarvis/Viernes).
+        threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
+        threading.Thread(
+            target=self.voice.speak,
+            args=("Sistemas principales iniciados. Te escucho.",),
+            daemon=True,
+        ).start()
         self.hud.run()
 
     def process_command(self, command: str) -> None:
         command = command.strip()
         if not command or not self.running:
             return
+
         lowered = command.lower().strip()
         if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
-        if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
+        if lowered in {
+            "limpiar conversación", "limpia la conversación",
+            "borra la conversación", "olvida esta conversación",
+        }:
             self.brain.reset_conversation()
             self.respond("Conversación limpiada.")
             return
@@ -87,19 +99,29 @@ class Jarvis:
         print(f"[JARVIS] {text}\n")
         if self.hud:
             self.hud.set_response(text)
-        threading.Thread(target=self.voice.speak, args=(text,), daemon=True).start()
+        threading.Thread(target=self.voice.speak, args=(text,), daemon=True, name="jarvis-tts").start()
 
     def run_voice_loop(self) -> None:
+        """Modo manos libres: escucha continuamente y exige palabra de activación."""
         while self.running:
             try:
-                command = self.voice.listen_for_command(seconds=7)
+                if self.hud:
+                    self.hud.set_state("LISTENING")
+                command = self.voice.listen_for_command(seconds=5)
                 if command:
+                    if self.hud:
+                        self.hud.add_message("USER", command)
+                        self.hud.set_state("PROCESSING COMMAND")
                     self.process_command(command)
+                elif self.hud:
+                    self.hud.set_state("SYSTEM READY")
             except KeyboardInterrupt:
                 self.shutdown()
+                return
             except Exception as exc:
                 print(f"[VOICE] Error: {exc}")
-                self.voice.speak("Tuve un problema con el sistema de voz. Intentaré de nuevo.")
+                if self.hud:
+                    self.hud.add_message("VOICE", f"Error: {exc}")
                 time.sleep(1)
 
     def shutdown(self) -> None:
