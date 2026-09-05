@@ -35,8 +35,8 @@ class Jarvis:
             return
 
         self.voice.speak("Sistemas principales iniciados.")
-        print("[SYSTEM] Listo. Escribe una orden o usa /voz.")
-        print("[SYSTEM] Comandos: /voz, /modelo ollama|claude, /sistema, /abrir, /recordar, /memoria, /limpiar, /salir")
+        print("[SYSTEM] Listo. Háblame o escribe normalmente. Por ejemplo: Jarvis, abre Google.")
+        print("[SYSTEM] Voz: escribe 'voz' para escuchar durante unos segundos.")
         self.run_console()
 
     def process_command(self, command: str) -> None:
@@ -44,38 +44,45 @@ class Jarvis:
         if not command:
             return
 
-        lowered = command.lower()
-        if lowered in {"salir", "exit", "quit", "/salir"}:
+        lowered = command.lower().strip()
+        if lowered in {"salir", "exit", "quit", "/salir", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
 
-        if lowered in {"/limpiar", "limpiar conversación"}:
+        if lowered in {
+            "/limpiar",
+            "limpiar conversación",
+            "limpia la conversación",
+            "borra la conversación",
+            "olvida esta conversación",
+        }:
             self.brain.reset_conversation()
             self.voice.speak("Conversación limpiada.")
             print("[SYSTEM] Historial eliminado.")
             return
 
-        if lowered in {"/voz", "voz", "modo voz"}:
+        if lowered in {"/voz", "voz", "modo voz", "escúchame", "escuchame"}:
             self.run_voice_once()
-            return
-
-        if lowered.startswith("/modelo "):
-            try:
-                provider = self.brain.set_provider(command.split(maxsplit=1)[1])
-                answer = f"Proveedor cambiado a {provider}."
-            except (ValueError, RuntimeError) as exc:
-                answer = str(exc)
-            print(f"[JARVIS] {answer}")
-            self.voice.speak(answer)
             return
 
         with self._command_lock:
             print(f"[USER] {command}")
 
-            # Las herramientas deterministas se ejecutan directamente.
-            tool_answer = self.tools.handle(command)
-            if tool_answer is not None:
-                answer = tool_answer
+            # El router solo detecta herramientas deterministas; no es otro agente.
+            tool_result = self.tools.handle(command)
+
+            if isinstance(tool_result, dict) and tool_result.get("provider"):
+                try:
+                    provider = self.brain.set_provider(str(tool_result["provider"]))
+                    answer = f"Entendido. Ahora usaré {provider}."
+                except (ValueError, RuntimeError) as exc:
+                    answer = str(exc)
+                print(f"[JARVIS] {answer}\n")
+                self.voice.speak(answer)
+                return
+
+            if isinstance(tool_result, str):
+                answer = tool_result
             else:
                 answer = self.brain.ask(command)
 
