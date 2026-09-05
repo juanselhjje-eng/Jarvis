@@ -42,11 +42,12 @@ VOICE_VOLUME = float(os.getenv("LOCAL_VOICE_VOLUME", "1.0"))
 
 
 class VoiceEngine:
-    """Entrada de voz local y salida TTS con ElevenLabs o pyttsx3 de respaldo."""
+    """Entrada de voz local y salida TTS con ElevenLabs y respaldo local real."""
 
     def __init__(self) -> None:
         self.tts = None
         self.elevenlabs = None
+        self._elevenlabs_failed = False
         self.whisper: Optional[WhisperModel] = None
         self._tts_lock = threading.Lock()
         self._listen_lock = threading.Lock()
@@ -63,19 +64,22 @@ class VoiceEngine:
         return self._listen_lock.locked()
 
     def _load_tts(self) -> None:
-        if TTS_PROVIDER == "elevenlabs":
-            if ElevenLabs is None:
-                print("[VOICE] Falta instalar 'elevenlabs'. Se usará pyttsx3.")
-            elif not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
-                print("[VOICE] ElevenLabs no está configurado. Se usará pyttsx3.")
-            else:
-                try:
-                    self.elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-                    print(f"[VOICE] ElevenLabs listo. Modelo: {ELEVENLABS_MODEL}")
-                    return
-                except Exception as exc:
-                    print(f"[VOICE] No se pudo iniciar ElevenLabs: {exc}")
+        # Siempre cargamos el TTS local: así ElevenLabs puede fallar sin dejar a JARVIS mudo.
         self._load_pyttsx3()
+        if TTS_PROVIDER != "elevenlabs":
+            return
+        if ElevenLabs is None:
+            print("[VOICE] Falta instalar 'elevenlabs'. Se usará TTS local.")
+            return
+        if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+            print("[VOICE] ElevenLabs no está configurado. Se usará TTS local.")
+            return
+        try:
+            self.elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+            print(f"[VOICE] ElevenLabs listo. Modelo: {ELEVENLABS_MODEL}")
+        except Exception as exc:
+            print(f"[VOICE] No se pudo iniciar ElevenLabs: {exc}")
+            self.elevenlabs = None
 
     def _load_pyttsx3(self) -> None:
         try:
@@ -93,7 +97,7 @@ class VoiceEngine:
             print(f"[VOICE] No se pudo iniciar TTS local: {exc}")
 
     def _speak_elevenlabs(self, text: str) -> bool:
-        if self.elevenlabs is None or self._shutdown.is_set():
+        if self.elevenlabs is None or self._elevenlabs_failed or self._shutdown.is_set():
             return False
         try:
             kwargs = {
@@ -119,7 +123,9 @@ class VoiceEngine:
             sd.play(samples, samplerate=sample_rate, blocking=True)
             return True
         except Exception as exc:
-            print(f"[VOICE] ElevenLabs falló: {exc}")
+            self._elevenlabs_failed = True
+            self.elevenlabs = None
+            print(f"[VOICE] ElevenLabs no pudo generar audio; cambiando a TTS local: {exc}")
             return False
 
     def speak(self, text: str) -> None:
@@ -165,7 +171,7 @@ class VoiceEngine:
         segments, _ = self.whisper.transcribe(
             audio,
             language=WHISPER_LANGUAGE,
-            beam_size=5,
+            beam_size=3,
             vad_filter=True,
             condition_on_previous_text=False,
         )
@@ -184,8 +190,6 @@ class VoiceEngine:
         return re.sub(r"\s+", " ", result).strip(" ,;:-")
 
     def listen_for_command(self, seconds: float = 7.0) -> Optional[str]:
-        # Un solo lector de micrófono: evita que el botón manual y el hilo continuo
-        # graben al mismo tiempo y provoquen que la voz se quede bloqueada.
         with self._listen_lock:
             while self.is_speaking and not self._shutdown.is_set():
                 time.sleep(0.1)
