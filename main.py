@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import sys
 import threading
 
 from brain import JarvisBrain
+from command_router import CommandRouter
 from voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Main orchestrator for the local J.A.R.V.I.S. assistant."""
+    """Runtime principal: un solo cerebro + herramientas deterministas."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
+        self.tools = CommandRouter()
         self.voice = VoiceEngine()
         self._command_lock = threading.Lock()
 
@@ -20,18 +21,22 @@ class Jarvis:
         print("=" * 64)
         print("                 J.A.R.V.I.S. LOCAL")
         print("=" * 64)
-        print(f"[SYSTEM] Ollama: {self.brain.host}")
-        print(f"[SYSTEM] Modelo: {self.brain.model}")
+        print(f"[SYSTEM] Proveedor: {self.brain.provider}")
+        print(f"[SYSTEM] Ollama: {self.brain.config.ollama_model}")
+        print(f"[SYSTEM] Claude: {self.brain.config.claude_model}")
 
         if not self.brain.is_available():
-            message = "Ollama no está disponible. Inicia Ollama y vuelve a ejecutar JARVIS."
+            message = (
+                "El proveedor configurado no está disponible. "
+                "Revisa Ollama o la configuración de Claude."
+            )
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
 
         self.voice.speak("Sistemas principales iniciados.")
-        print("[SYSTEM] Listo. Escribe una orden o usa el modo de voz.")
-        print("[SYSTEM] Comandos: /voz, /limpiar, /salir")
+        print("[SYSTEM] Listo. Escribe una orden o usa /voz.")
+        print("[SYSTEM] Comandos: /voz, /modelo ollama|claude, /sistema, /abrir, /recordar, /memoria, /limpiar, /salir")
         self.run_console()
 
     def process_command(self, command: str) -> None:
@@ -54,18 +59,33 @@ class Jarvis:
             self.run_voice_once()
             return
 
+        if lowered.startswith("/modelo "):
+            try:
+                provider = self.brain.set_provider(command.split(maxsplit=1)[1])
+                answer = f"Proveedor cambiado a {provider}."
+            except (ValueError, RuntimeError) as exc:
+                answer = str(exc)
+            print(f"[JARVIS] {answer}")
+            self.voice.speak(answer)
+            return
+
         with self._command_lock:
             print(f"[USER] {command}")
-            answer = self.brain.ask(command)
+
+            # Las herramientas deterministas se ejecutan directamente.
+            tool_answer = self.tools.handle(command)
+            if tool_answer is not None:
+                answer = tool_answer
+            else:
+                answer = self.brain.ask(command)
+
             print(f"[JARVIS] {answer}\n")
-            # Regla de salida: toda respuesta principal también se pronuncia.
             self.voice.speak(answer)
 
     def run_console(self) -> None:
         while self.running:
             try:
-                command = input("Tú > ")
-                self.process_command(command)
+                self.process_command(input("Tú > "))
             except (KeyboardInterrupt, EOFError):
                 self.shutdown()
             except Exception as exc:
