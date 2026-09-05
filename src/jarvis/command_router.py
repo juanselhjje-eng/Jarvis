@@ -79,23 +79,62 @@ class CommandRouter:
     @staticmethod
     def _communication_intent(text: str) -> dict[str, str] | None:
         lower = text.lower()
-        if not re.search(r"\b(?:escríbele|escribele|envíale|enviale|mándale|mandale|envía|envia|manda)\b", lower):
+        if not re.search(r"\b(?:escríbele|escribele|envíale|enviale|mándale|mandale|envía|envia|manda|escribirle|mandar)\b", lower):
             return None
-        if "teams" in lower:
-            platform_name, url = "Teams", "https://teams.microsoft.com/"
+
+        if "teams" in lower or "teams.live.com" in lower or "teams.microsoft.com" in lower:
+            platform_name = "Teams"
+            default_url = "https://teams.microsoft.com/"
         elif "gmail" in lower or "correo" in lower or "email" in lower:
-            platform_name, url = "Gmail", "https://mail.google.com/"
+            platform_name = "Gmail"
+            default_url = "https://mail.google.com/"
         else:
             return None
-        match = re.search(r"\b(?:a|para)\s+([^,.:]+?)(?:\s+(?:y|dile|dile que|con el mensaje|que diga)\b|,|$)", text, flags=re.IGNORECASE)
-        person = match.group(1).strip() if match else "el contacto"
-        body_match = re.search(r"\b(?:dile|escríbele|escribele|mensaje)\s+(?:que\s+)?(.+)$", text, flags=re.IGNORECASE)
-        body = body_match.group(1).strip() if body_match else ""
+
+        url_match = re.search(r"https?://[^\s]+", text, flags=re.IGNORECASE)
+        url = url_match.group(0).rstrip(".,)") if url_match else default_url
+
+        person = "el contacto"
+        body = ""
+        person_match = re.search(r"\b(?:a|para)\s+(.+)$", text, flags=re.IGNORECASE)
+        if person_match:
+            remainder = person_match.group(1).strip()
+            split = re.search(
+                r"\s+(?:y\s+)?(?:dile|dile que|que diga|mensaje|mensaje que|hola)\b\s*[:,-]?\s*",
+                remainder,
+                flags=re.IGNORECASE,
+            )
+            if split:
+                person = remainder[:split.start()].strip(" ,:-") or person
+                tail = remainder[split.end():].strip()
+                if remainder[split.start():].lstrip().lower().startswith("hola"):
+                    body = "hola" + (f" {tail}" if tail else "")
+                else:
+                    body = tail
+            else:
+                greeting = re.search(r"\s+(hola\b.*)$", remainder, flags=re.IGNORECASE)
+                if greeting:
+                    person = remainder[:greeting.start()].strip(" ,:-") or person
+                    body = greeting.group(1).strip()
+                else:
+                    person = remainder.strip(" ,:-") or person
+
         webbrowser.open(url, new=2)
-        detail = f" He identificado a {person}."
         if body:
-            detail += " El mensaje queda pendiente de confirmación antes de enviarlo."
-        return {"communication": platform_name.lower(), "person": person, "body": body, "message": f"Abrí {platform_name}.{detail}"}
+            message = (
+                f"Abrí {platform_name} en el navegador. Contacto: {person}. "
+                f"Mensaje preparado: \"{body}\". No lo enviaré sin tu confirmación explícita."
+            )
+        else:
+            message = f"Abrí {platform_name} en el navegador. Contacto detectado: {person}. Falta el texto del mensaje."
+
+        return {
+            "communication": platform_name.lower(),
+            "person": person,
+            "body": body,
+            "url": url,
+            "message": message,
+        }
 
     @staticmethod
     def _search_intent(text: str) -> str | None:
@@ -109,7 +148,10 @@ class CommandRouter:
 
     @staticmethod
     def _open_intent(text: str) -> str | None:
-        for pattern in (r"^(?:abre|abrir|open)\s+(.+)$", r"^(?:inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(.+)$"):
+        for pattern in (
+            r"^(?:abre|abrir|open)\s+(.+)$",
+            r"^(?:inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(.+)$",
+        ):
             match = re.match(pattern, text, flags=re.IGNORECASE)
             if match:
                 return match.group(1).strip()
@@ -122,7 +164,10 @@ class CommandRouter:
 
     @staticmethod
     def _is_memory_request(text: str) -> bool:
-        return text in {"qué recuerdas", "que recuerdas", "qué tienes en memoria", "que tienes en memoria", "qué recuerdas de mí", "que recuerdas de mi"}
+        return text in {
+            "qué recuerdas", "que recuerdas", "qué tienes en memoria", "que tienes en memoria",
+            "qué recuerdas de mí", "que recuerdas de mi",
+        }
 
     @staticmethod
     def system_status() -> str:
@@ -134,25 +179,54 @@ class CommandRouter:
     def open_target(target: str) -> str:
         if not target:
             return "No indicaste qué abrir."
-        clean = target.strip().lower()
+
+        original = target.strip()
+        clean = original.lower()
+
+        # "en Google", "en Chrome" y "en el navegador" significan abrir la web,
+        # no buscar una aplicación llamada literalmente así.
+        clean = re.sub(r"^(?:en\s+)?(?:el\s+)?(?:navegador|google|chrome)\s+", "", clean).strip()
+
+        if re.match(r"^https?://", clean, flags=re.IGNORECASE):
+            webbrowser.open(clean, new=2)
+            return f"Abriendo {original} en el navegador."
+
         websites = {
-            "google": "https://www.google.com", "google chrome": "https://www.google.com", "chrome": "https://www.google.com",
-            "youtube": "https://www.youtube.com", "gmail": "https://mail.google.com", "google maps": "https://maps.google.com",
-            "maps": "https://maps.google.com", "github": "https://github.com", "chatgpt": "https://chatgpt.com",
-            "teams": "https://teams.microsoft.com/", "microsoft teams": "https://teams.microsoft.com/",
+            "google": "https://www.google.com",
+            "google chrome": "https://www.google.com",
+            "chrome": "https://www.google.com",
+            "youtube": "https://www.youtube.com",
+            "gmail": "https://mail.google.com",
+            "google maps": "https://maps.google.com",
+            "maps": "https://maps.google.com",
+            "github": "https://github.com",
+            "chatgpt": "https://chatgpt.com",
+            "teams": "https://teams.microsoft.com/",
+            "microsoft teams": "https://teams.microsoft.com/",
+            "mi teams": "https://teams.microsoft.com/",
+            "teams personal": "https://teams.live.com/v2/",
+            "mi teams personal": "https://teams.live.com/v2/",
         }
         if clean in websites:
             webbrowser.open(websites[clean], new=2)
-            return f"Abriendo {target}."
-        path = Path(os.path.expandvars(os.path.expanduser(target)))
+            return f"Abriendo {original} en el navegador."
+
+        browser_target = re.match(r"^(?:en\s+)?(?:google|chrome|navegador)\s+(.+)$", clean)
+        if browser_target:
+            nested = browser_target.group(1).strip()
+            if nested in websites:
+                webbrowser.open(websites[nested], new=2)
+                return f"Abriendo {nested} en el navegador."
+
+        path = Path(os.path.expandvars(os.path.expanduser(original)))
         try:
             if path.exists():
                 os.startfile(str(path))  # type: ignore[attr-defined]
                 return f"Abriendo {path}."
-            executable = shutil.which(target)
+            executable = shutil.which(original)
             if executable:
                 subprocess.Popen([executable], shell=False)
-                return f"Ejecutando {target}."
-            return f"No encontré una aplicación o ruta válida llamada {target}."
+                return f"Ejecutando {original}."
+            return f"No encontré una aplicación o ruta válida llamada {original}."
         except OSError as exc:
-            return f"No pude abrir {target}: {exc}"
+            return f"No pude abrir {original}: {exc}"
