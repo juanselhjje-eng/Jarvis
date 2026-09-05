@@ -5,41 +5,48 @@ import time
 
 from brain import JarvisBrain
 from command_router import CommandRouter
+from hud import JarvisHUD
 from voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro y herramientas deterministas."""
+    """Runtime de JARVIS: un solo cerebro, herramientas y HUD funcional."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
         self.tools = CommandRouter()
         self.voice = VoiceEngine()
+        self.hud: JarvisHUD | None = None
         self._command_lock = threading.Lock()
 
     def start(self) -> None:
-        print("=" * 64)
-        print("                 J.A.R.V.I.S. LOCAL")
-        print("=" * 64)
-        print(f"[SYSTEM] Proveedor: {self.brain.provider}")
-        print(f"[SYSTEM] Ollama: {self.brain.config.ollama_model}")
-        print(f"[SYSTEM] Claude: {self.brain.config.claude_model}")
-
         if not self.brain.is_available():
             message = "El proveedor configurado no está disponible. Revisa Ollama o Claude."
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
 
-        self.voice.speak("Sistemas principales iniciados. Te escucho.")
-        print("[SYSTEM] Modo conversación activo. Di 'Jarvis' o 'Viernes' seguido de tu orden.")
-        print("[SYSTEM] Ctrl+C para detener.")
-        self.run_voice_loop()
+        self.hud = JarvisHUD(
+            brain=self.brain,
+            voice=self.voice,
+            process_command=self.process_command,
+            shutdown=self.shutdown,
+        )
+        self.hud.add_message(
+            "SYSTEM",
+            f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.",
+        )
+        threading.Thread(
+            target=self.voice.speak,
+            args=("Sistemas principales iniciados. Te escucho.",),
+            daemon=True,
+        ).start()
+        self.hud.run()
 
     def process_command(self, command: str) -> None:
         command = command.strip()
-        if not command:
+        if not command or not self.running:
             return
 
         lowered = command.lower().strip()
@@ -80,9 +87,12 @@ class Jarvis:
 
     def respond(self, text: str) -> None:
         print(f"[JARVIS] {text}\n")
-        self.voice.speak(text)
+        if self.hud:
+            self.hud.set_response(text)
+        threading.Thread(target=self.voice.speak, args=(text,), daemon=True).start()
 
     def run_voice_loop(self) -> None:
+        """Compatibilidad con el modo de voz anterior sin HUD."""
         while self.running:
             try:
                 command = self.voice.listen_for_command(seconds=7)
@@ -99,8 +109,10 @@ class Jarvis:
         if not self.running:
             return
         self.running = False
-        self.voice.speak("Sistemas apagados.")
-        self.voice.shutdown()
+        try:
+            self.voice.speak("Sistemas apagados.")
+        finally:
+            self.voice.shutdown()
         print("[SYSTEM] JARVIS detenido.")
 
 
@@ -108,6 +120,9 @@ def main() -> int:
     jarvis = Jarvis()
     try:
         jarvis.start()
+        return 0
+    except KeyboardInterrupt:
+        jarvis.shutdown()
         return 0
     except Exception as exc:
         print(f"[FATAL] {exc}")
