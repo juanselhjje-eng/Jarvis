@@ -5,12 +5,12 @@ import time
 
 from .brain import JarvisBrain
 from .command_router import CommandRouter
-from .hud import JarvisHUD
+from .hud_futuristic import JarvisHUD
 from .voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas y HUD funcional."""
+    """Runtime de JARVIS: un solo cerebro, herramientas y HUD."""
 
     def __init__(self) -> None:
         self.running = True
@@ -52,9 +52,13 @@ class Jarvis:
             self.brain.reset_conversation()
             self.respond("Conversación limpiada.")
             return
+
         with self._command_lock:
             print(f"[USER] {command}")
+            if self.hud:
+                self.hud.set_state("ANALYZING COMMAND")
             tool_result = self.tools.handle(command)
+
             if isinstance(tool_result, dict):
                 if tool_result.get("provider"):
                     try:
@@ -63,14 +67,19 @@ class Jarvis:
                     except (ValueError, RuntimeError) as exc:
                         self.respond(str(exc))
                     return
+
                 if tool_result.get("communication"):
                     message = str(tool_result.get("message", "Abrí la aplicación."))
                     self.respond(message)
                     print("[ACTION] No envío mensajes automáticamente: el envío necesita confirmación explícita.")
                     return
+
             if isinstance(tool_result, str):
                 self.respond(tool_result)
                 return
+
+            if self.hud:
+                self.hud.set_state("THINKING")
             answer = self.brain.ask(command)
             self.respond(answer)
 
