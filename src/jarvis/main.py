@@ -5,17 +5,19 @@ import time
 
 from .brain import JarvisBrain
 from .command_router import CommandRouter
+from .execution import ExecutionTracker, TaskState
 from .hud_futuristic import JarvisHUD
 from .voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas y HUD."""
+    """Runtime de JARVIS: un solo cerebro, herramientas y verificación de tareas."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
         self.tools = CommandRouter()
+        self.execution = ExecutionTracker()
         self.voice = VoiceEngine()
         self.hud: JarvisHUD | None = None
         self._command_lock = threading.Lock()
@@ -47,6 +49,8 @@ class Jarvis:
 
         with self._command_lock:
             print(f"[USER] {command}")
+            self.execution.start(command)
+            self.execution.set_state(TaskState.INTENT)
             if self.hud:
                 self.hud.set_state("ANALYZING COMMAND")
             tool_result = self.tools.handle(command)
@@ -54,39 +58,61 @@ class Jarvis:
             if isinstance(tool_result, dict):
                 if tool_result.get("provider"):
                     try:
+                        self.execution.set_state(TaskState.EXECUTING)
                         provider = self.brain.set_provider(str(tool_result["provider"]))
-                        self.respond(f"Entendido. Ahora usaré {provider}.")
+                        response = f"Entendido. Ahora usaré {provider}."
+                        self.execution.finish(response, verified=True)
+                        self.respond(response)
                     except (ValueError, RuntimeError) as exc:
+                        self.execution.finish(str(exc), verified=False, success=False)
                         self.respond(str(exc))
                     return
 
                 if tool_result.get("send_message") == "teams":
-                    self.respond(self.tools.teams.send_draft())
+                    self.execution.set_state(TaskState.EXECUTING)
+                    response = self.tools.teams.send_draft()
+                    self.execution.set_state(TaskState.VERIFYING)
+                    verified = "enviado" in response.lower() and "no pude" not in response.lower()
+                    self.execution.finish(response, verified=verified, success=verified)
+                    self.respond(response)
                     return
 
                 if tool_result.get("communication") == "teams":
                     educational = tool_result.get("educational") == "True"
                     action = tool_result.get("action")
+                    self.execution.set_state(TaskState.EXECUTING)
                     if action == "open":
-                        self.respond(self.tools.teams.open(educational))
-                        return
-                    if action == "open_contact":
-                        self.respond(self.tools.teams.open_contact(tool_result.get("person", ""), educational))
-                        return
-                    self.respond(str(tool_result.get("message", "Procesando Teams.")))
+                        response = self.tools.teams.open(educational)
+                    elif action == "open_contact":
+                        response = self.tools.teams.open_contact(tool_result.get("person", ""), educational)
+                    else:
+                        response = str(tool_result.get("message", "Procesando Teams."))
+                    self.execution.set_state(TaskState.VERIFYING)
+                    verified = bool(response.strip()) and "no pude" not in response.lower()
+                    self.execution.finish(response, verified=verified, success=verified)
+                    self.respond(response)
                     return
 
                 if tool_result.get("communication"):
-                    self.respond(str(tool_result.get("message", "Abrí la aplicación.")))
+                    response = str(tool_result.get("message", "Abrí la aplicación."))
+                    self.execution.finish(response, verified=True)
+                    self.respond(response)
                     return
 
             if isinstance(tool_result, str):
-                self.respond(tool_result)
+                self.execution.set_state(TaskState.VERIFYING)
+                response = tool_result
+                verified = not any(marker in response.lower() for marker in ("no pude", "error", "falló", "fallo", "no disponible"))
+                self.execution.finish(response, verified=verified, success=verified)
+                self.respond(response)
                 return
 
+            self.execution.set_state(TaskState.PLANNING)
             if self.hud:
                 self.hud.set_state("THINKING")
             answer = self.brain.ask(command)
+            self.execution.set_state(TaskState.COMPLETED)
+            self.execution.finish(answer, verified=True)
             self.respond(answer)
 
     def respond(self, text: str) -> None:
