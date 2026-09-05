@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import threading
 from typing import Optional
@@ -9,17 +10,31 @@ import pyttsx3
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-WHISPER_MODEL = "base"
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv()
+
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 WHISPER_DEVICE = "cpu"
 WHISPER_COMPUTE_TYPE = "int8"
 WHISPER_LANGUAGE = "es"
 SAMPLE_RATE = 16000
-WAKE_WORDS = ("jarvis", "viernes")
+WAKE_WORDS = tuple(
+    word.strip().lower()
+    for word in os.getenv("JARVIS_WAKE_WORDS", "jarvis,viernes").split(",")
+    if word.strip()
+)
 VOICE_RATE = 175
 VOICE_VOLUME = 1.0
 
 
 class VoiceEngine:
+    """Entrada y salida de voz local. No envía audio a servicios externos."""
+
     def __init__(self) -> None:
         self.tts = None
         self.whisper: Optional[WhisperModel] = None
@@ -53,7 +68,7 @@ class VoiceEngine:
 
     def load_whisper(self) -> None:
         if self.whisper is None:
-            print("[VOICE] Cargando faster-whisper...")
+            print(f"[VOICE] Cargando faster-whisper ({WHISPER_MODEL})...")
             self.whisper = WhisperModel(
                 WHISPER_MODEL,
                 device=WHISPER_DEVICE,
