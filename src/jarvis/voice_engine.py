@@ -49,12 +49,18 @@ class VoiceEngine:
         self.elevenlabs = None
         self.whisper: Optional[WhisperModel] = None
         self._tts_lock = threading.Lock()
+        self._listen_lock = threading.Lock()
         self._speaking = threading.Event()
+        self._shutdown = threading.Event()
         self._load_tts()
 
     @property
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
+
+    @property
+    def is_listening(self) -> bool:
+        return self._listen_lock.locked()
 
     def _load_tts(self) -> None:
         if TTS_PROVIDER == "elevenlabs":
@@ -87,12 +93,23 @@ class VoiceEngine:
             print(f"[VOICE] No se pudo iniciar TTS local: {exc}")
 
     def _speak_elevenlabs(self, text: str) -> bool:
-        if self.elevenlabs is None:
+        if self.elevenlabs is None or self._shutdown.is_set():
             return False
         try:
-            kwargs = {"text": text, "voice_id": ELEVENLABS_VOICE_ID, "model_id": ELEVENLABS_MODEL, "output_format": ELEVENLABS_OUTPUT_FORMAT}
+            kwargs = {
+                "text": text,
+                "voice_id": ELEVENLABS_VOICE_ID,
+                "model_id": ELEVENLABS_MODEL,
+                "output_format": ELEVENLABS_OUTPUT_FORMAT,
+            }
             if VoiceSettings is not None:
-                kwargs["voice_settings"] = VoiceSettings(stability=0.55, similarity_boost=0.85, style=0.15, use_speaker_boost=True, speed=1.0)
+                kwargs["voice_settings"] = VoiceSettings(
+                    stability=0.55,
+                    similarity_boost=0.85,
+                    style=0.15,
+                    use_speaker_boost=True,
+                    speed=1.0,
+                )
             audio = self.elevenlabs.text_to_speech.convert(**kwargs)
             audio_bytes = audio if isinstance(audio, bytes) else b"".join(chunk for chunk in audio if chunk)
             samples = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -107,7 +124,7 @@ class VoiceEngine:
 
     def speak(self, text: str) -> None:
         text = text.strip()
-        if not text:
+        if not text or self._shutdown.is_set():
             return
         with self._tts_lock:
             self._speaking.set()
@@ -125,10 +142,16 @@ class VoiceEngine:
     def load_whisper(self) -> None:
         if self.whisper is None:
             print(f"[VOICE] Cargando faster-whisper ({WHISPER_MODEL})...")
-            self.whisper = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
+            self.whisper = WhisperModel(
+                WHISPER_MODEL,
+                device=WHISPER_DEVICE,
+                compute_type=WHISPER_COMPUTE_TYPE,
+            )
             print("[VOICE] Whisper listo.")
 
     def record(self, seconds: float = 7.0) -> np.ndarray:
+        if self._shutdown.is_set():
+            return np.empty(0, dtype=np.float32)
         frames = int(seconds * SAMPLE_RATE)
         print("[VOICE] Escuchando...")
         audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=1, dtype="float32")
@@ -136,8 +159,16 @@ class VoiceEngine:
         return audio.flatten()
 
     def transcribe(self, audio: np.ndarray) -> str:
+        if audio.size == 0:
+            return ""
         self.load_whisper()
-        segments, _ = self.whisper.transcribe(audio, language=WHISPER_LANGUAGE, beam_size=5, vad_filter=True, condition_on_previous_text=False)
+        segments, _ = self.whisper.transcribe(
+            audio,
+            language=WHISPER_LANGUAGE,
+            beam_size=5,
+            vad_filter=True,
+            condition_on_previous_text=False,
+        )
         return " ".join(segment.text.strip() for segment in segments).strip()
 
     def listen(self, seconds: float = 7.0) -> str:
@@ -150,19 +181,29 @@ class VoiceEngine:
         result = text
         for word in WAKE_WORDS:
             result = re.sub(rf"\b{re.escape(word)}\b", "", result, flags=re.IGNORECASE)
-        return re.sub(r"\s+", " ", result).strip()
+        return re.sub(r"\s+", " ", result).strip(" ,;:-")
 
     def listen_for_command(self, seconds: float = 7.0) -> Optional[str]:
-        while self.is_speaking:
-            time.sleep(0.1)
-        text = self.listen(seconds)
-        print(f"[VOICE] Reconocido: {text}")
-        if not text or not self.has_wake_word(text):
-            return None
-        command = self.remove_wake_word(text)
-        return command or None
+        # Un solo lector de micrófono: evita que el botón manual y el hilo continuo
+        # graben al mismo tiempo y provoquen que la voz se quede bloqueada.
+        with self._listen_lock:
+            while self.is_speaking and not self._shutdown.is_set():
+                time.sleep(0.1)
+            if self._shutdown.is_set():
+                return None
+            try:
+                text = self.listen(seconds)
+            except Exception as exc:
+                print(f"[VOICE] Error de escucha: {exc}")
+                return None
+            print(f"[VOICE] Reconocido: {text}")
+            if not text or not self.has_wake_word(text):
+                return None
+            command = self.remove_wake_word(text)
+            return command or None
 
     def shutdown(self) -> None:
+        self._shutdown.set()
         try:
             sd.stop()
             if self.tts:
