@@ -1,25 +1,23 @@
-# J.A.R.V.I.S.
+# J.A.R.V.I.S. BETA 0.2
 
 Asistente personal para Windows, local-first, con **un solo agente de IA**. Puedes hablarle de forma natural; no necesitas aprender comandos.
 
 ## Cómo funciona
 
 ```text
-Tu voz
-  ↓
-"Jarvis, abre Google"
-  ↓
-JARVIS / JarvisBrain
-  ├── Ollama (local)
-  └── Claude API (opcional)
-  ↓
-Herramientas
-  ├── Windows
-  ├── navegador
-  ├── archivos
-  ├── memoria
-  ├── Gmail / Teams (integraciones)
-  └── documentos
+Tu voz o texto
+      ↓
+   JARVIS
+      ↓
+ JarvisBrain
+ ┌────┴────┐
+Ollama   Claude
+      ↓
+Herramientas deterministas
+      ↓
+Acción real / resultado
+      ↓
+Respuesta + voz
 ```
 
 Ollama y Claude son **proveedores del mismo cerebro**, no agentes diferentes.
@@ -35,20 +33,30 @@ Ollama y Claude son **proveedores del mismo cerebro**, no agentes diferentes.
 - `Jarvis, ¿qué recuerdas?`
 - `Jarvis, revisa mi PC.`
 - `Jarvis, abre Teams.`
-- `Jarvis, escríbele a Pepe por Gmail y dile hola.`
 
-Las acciones que modifican o envían información sensible deben tener una confirmación explícita antes de ejecutarse.
+Las acciones sensibles, como enviar mensajes, deben tener confirmación explícita antes de ejecutarse. Las integraciones de Gmail/Teams todavía no están implementadas como automatización completa.
 
 ## Voz
 
-JARVIS utiliza `faster-whisper` localmente para transcribir voz y `pyttsx3` para responder. El programa queda escuchando en ciclos y solo procesa una orden cuando detecta una palabra de activación, por defecto `Jarvis` o `Viernes`.
+### Entrada
+
+`faster-whisper` funciona localmente para convertir tu voz en texto. Las palabras de activación por defecto son `Jarvis` y `Viernes`.
+
+### Salida
+
+La voz principal usa **ElevenLabs**. Si no está configurado o la API falla, JARVIS intenta utilizar `pyttsx3` como respaldo local.
 
 La configuración está en `.env`:
 
 ```env
-JARVIS_WAKE_WORDS=jarvis,viernes
-WHISPER_MODEL=base
+JARVIS_TTS=elevenlabs
+ELEVENLABS_API_KEY=tu_clave
+ELEVENLABS_VOICE_ID=W5JElH3dK1UYYAiHH7uh
+ELEVENLABS_MODEL=eleven_multilingual_v2
+ELEVENLABS_OUTPUT_FORMAT=pcm_22050
 ```
+
+`pcm_22050` permite reproducir el audio directamente con `sounddevice` sin depender de un reproductor externo. ElevenLabs también ofrece otros formatos y modelos; la configuración se mantiene en `.env` para poder cambiarlos sin modificar el código.
 
 ## Ollama
 
@@ -94,11 +102,11 @@ O ejecuta `START_JARVIS.bat`.
 - `main.py` — runtime principal.
 - `brain.py` — único cerebro y proveedores Ollama/Claude.
 - `command_router.py` — herramientas deterministas y reconocimiento de intenciones simples.
-- `voice_engine.py` — escucha y voz local.
+- `voice_engine.py` — reconocimiento local y TTS de ElevenLabs con respaldo local.
 - `memory.py` — memoria persistente local.
-- `app.py` — compatibilidad para iniciar el mismo runtime.
+- `hud.py` — interfaz gráfica futurista basada en Tkinter.
 
-La arquitectura está preparada para crecer con herramientas de Windows, navegador, documentos, Gmail, Teams, calendario, visión y automatización, sin crear subagentes.
+Se eliminó el antiguo stack de agentes/orquestadores para que el repositorio refleje la arquitectura actual y no mantenga código muerto o contradictorio.
 
 ## Seguridad
 
