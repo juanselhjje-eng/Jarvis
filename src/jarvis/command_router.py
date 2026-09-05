@@ -11,7 +11,7 @@ from pathlib import Path
 
 import psutil
 
-from memory import LocalMemory
+from .memory import LocalMemory
 
 
 class CommandRouter:
@@ -72,13 +72,8 @@ class CommandRouter:
     @staticmethod
     def _is_system_request(text: str) -> bool:
         return text in {
-            "estado del sistema",
-            "estado sistema",
-            "cómo está el sistema",
-            "como esta el sistema",
-            "revisa el sistema",
-            "revisa mi pc",
-            "revisa mi computadora",
+            "estado del sistema", "estado sistema", "cómo está el sistema", "como esta el sistema",
+            "revisa el sistema", "revisa mi pc", "revisa mi computadora",
         }
 
     @staticmethod
@@ -86,35 +81,21 @@ class CommandRouter:
         lower = text.lower()
         if not re.search(r"\b(?:escríbele|escribele|envíale|enviale|mándale|mandale|envía|envia|manda)\b", lower):
             return None
-
         if "teams" in lower:
-            platform_name = "Teams"
-            url = "https://teams.microsoft.com/"
+            platform_name, url = "Teams", "https://teams.microsoft.com/"
         elif "gmail" in lower or "correo" in lower or "email" in lower:
-            platform_name = "Gmail"
-            url = "https://mail.google.com/"
+            platform_name, url = "Gmail", "https://mail.google.com/"
         else:
             return None
-
-        match = re.search(
-            r"\b(?:a|para)\s+([^,.:]+?)(?:\s+(?:y|dile|dile que|con el mensaje|que diga)\b|,|$)",
-            text,
-            flags=re.IGNORECASE,
-        )
+        match = re.search(r"\b(?:a|para)\s+([^,.:]+?)(?:\s+(?:y|dile|dile que|con el mensaje|que diga)\b|,|$)", text, flags=re.IGNORECASE)
         person = match.group(1).strip() if match else "el contacto"
         body_match = re.search(r"\b(?:dile|escríbele|escribele|mensaje)\s+(?:que\s+)?(.+)$", text, flags=re.IGNORECASE)
         body = body_match.group(1).strip() if body_match else ""
-
         webbrowser.open(url, new=2)
         detail = f" He identificado a {person}."
         if body:
             detail += " El mensaje queda pendiente de confirmación antes de enviarlo."
-        return {
-            "communication": platform_name.lower(),
-            "person": person,
-            "body": body,
-            "message": f"Abrí {platform_name}.{detail}",
-        }
+        return {"communication": platform_name.lower(), "person": person, "body": body, "message": f"Abrí {platform_name}.{detail}"}
 
     @staticmethod
     def _search_intent(text: str) -> str | None:
@@ -128,10 +109,7 @@ class CommandRouter:
 
     @staticmethod
     def _open_intent(text: str) -> str | None:
-        for pattern in (
-            r"^(?:abre|abrir|open)\s+(.+)$",
-            r"^(?:inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(.+)$",
-        ):
+        for pattern in (r"^(?:abre|abrir|open)\s+(.+)$", r"^(?:inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(.+)$"):
             match = re.match(pattern, text, flags=re.IGNORECASE)
             if match:
                 return match.group(1).strip()
@@ -139,23 +117,12 @@ class CommandRouter:
 
     @staticmethod
     def _remember_intent(text: str) -> str | None:
-        match = re.match(
-            r"^(?:recuerda|recordar|acuérdate de|acuerdate de|guarda|guardar|anota|anotar)\s+(.+)$",
-            text,
-            flags=re.IGNORECASE,
-        )
+        match = re.match(r"^(?:recuerda|recordar|acuérdate de|acuerdate de|guarda|guardar|anota|anotar)\s+(.+)$", text, flags=re.IGNORECASE)
         return match.group(1).strip() if match else None
 
     @staticmethod
     def _is_memory_request(text: str) -> bool:
-        return text in {
-            "qué recuerdas",
-            "que recuerdas",
-            "qué tienes en memoria",
-            "que tienes en memoria",
-            "qué recuerdas de mí",
-            "que recuerdas de mi",
-        }
+        return text in {"qué recuerdas", "que recuerdas", "qué tienes en memoria", "que tienes en memoria", "qué recuerdas de mí", "que recuerdas de mi"}
 
     @staticmethod
     def system_status() -> str:
@@ -167,37 +134,25 @@ class CommandRouter:
     def open_target(target: str) -> str:
         if not target:
             return "No indicaste qué abrir."
-
         clean = target.strip().lower()
         websites = {
-            "google": "https://www.google.com",
-            "google chrome": "https://www.google.com",
-            "chrome": "https://www.google.com",
-            "youtube": "https://www.youtube.com",
-            "gmail": "https://mail.google.com",
-            "google maps": "https://maps.google.com",
-            "maps": "https://maps.google.com",
-            "github": "https://github.com",
-            "chatgpt": "https://chatgpt.com",
-            "teams": "https://teams.microsoft.com/",
-            "microsoft teams": "https://teams.microsoft.com/",
+            "google": "https://www.google.com", "google chrome": "https://www.google.com", "chrome": "https://www.google.com",
+            "youtube": "https://www.youtube.com", "gmail": "https://mail.google.com", "google maps": "https://maps.google.com",
+            "maps": "https://maps.google.com", "github": "https://github.com", "chatgpt": "https://chatgpt.com",
+            "teams": "https://teams.microsoft.com/", "microsoft teams": "https://teams.microsoft.com/",
         }
-
         if clean in websites:
             webbrowser.open(websites[clean], new=2)
             return f"Abriendo {target}."
-
         path = Path(os.path.expandvars(os.path.expanduser(target)))
         try:
             if path.exists():
                 os.startfile(str(path))  # type: ignore[attr-defined]
                 return f"Abriendo {path}."
-
             executable = shutil.which(target)
             if executable:
                 subprocess.Popen([executable], shell=False)
                 return f"Ejecutando {target}."
-
             return f"No encontré una aplicación o ruta válida llamada {target}."
         except OSError as exc:
             return f"No pude abrir {target}: {exc}"

@@ -6,15 +6,17 @@ from threading import Lock
 from typing import Any
 
 
-MEMORY_FILE = Path(__file__).with_name("memory.json")
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+MEMORY_FILE = DATA_DIR / "memory.json"
 
 
 class LocalMemory:
-    """Memoria persistente local y sencilla; no envía datos a ningún servicio."""
+    """Memoria persistente local; no envía datos a ningún servicio."""
 
     def __init__(self, path: Path = MEMORY_FILE) -> None:
         self.path = path
         self._lock = Lock()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -26,9 +28,7 @@ class LocalMemory:
             return {}
 
     def _save(self, data: dict[str, Any]) -> None:
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:

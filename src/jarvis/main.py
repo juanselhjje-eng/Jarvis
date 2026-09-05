@@ -3,10 +3,10 @@ from __future__ import annotations
 import threading
 import time
 
-from src.jarvis.brain import JarvisBrain
-from src.jarvis.command_router import CommandRouter
-from src.jarvis.hud import JarvisHUD
-from src.jarvis.voice_engine import VoiceEngine
+from .brain import JarvisBrain
+from .command_router import CommandRouter
+from .hud import JarvisHUD
+from .voice_engine import VoiceEngine
 
 
 class Jarvis:
@@ -37,32 +37,24 @@ class Jarvis:
             "SYSTEM",
             f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.",
         )
-        threading.Thread(
-            target=self.voice.speak,
-            args=("Sistemas principales iniciados. Te escucho.",),
-            daemon=True,
-        ).start()
+        threading.Thread(target=self.voice.speak, args=("Sistemas principales iniciados. Te escucho.",), daemon=True).start()
         self.hud.run()
 
     def process_command(self, command: str) -> None:
         command = command.strip()
         if not command or not self.running:
             return
-
         lowered = command.lower().strip()
         if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
-
         if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
             self.brain.reset_conversation()
             self.respond("Conversación limpiada.")
             return
-
         with self._command_lock:
             print(f"[USER] {command}")
             tool_result = self.tools.handle(command)
-
             if isinstance(tool_result, dict):
                 if tool_result.get("provider"):
                     try:
@@ -71,17 +63,14 @@ class Jarvis:
                     except (ValueError, RuntimeError) as exc:
                         self.respond(str(exc))
                     return
-
                 if tool_result.get("communication"):
                     message = str(tool_result.get("message", "Abrí la aplicación."))
                     self.respond(message)
                     print("[ACTION] No envío mensajes automáticamente: el envío necesita confirmación explícita.")
                     return
-
             if isinstance(tool_result, str):
                 self.respond(tool_result)
                 return
-
             answer = self.brain.ask(command)
             self.respond(answer)
 
@@ -92,7 +81,6 @@ class Jarvis:
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True).start()
 
     def run_voice_loop(self) -> None:
-        """Compatibilidad con el modo de voz anterior sin HUD."""
         while self.running:
             try:
                 command = self.voice.listen_for_command(seconds=7)
