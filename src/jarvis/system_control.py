@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import platform
 import shutil
@@ -13,7 +14,7 @@ import psutil
 
 
 class SystemControl:
-    """Herramientas locales explícitas para que JARVIS pueda inspeccionar y modificar Windows."""
+    """Herramientas locales explícitas para inspeccionar y modificar Windows."""
 
     def _powershell(self, command: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -37,19 +38,15 @@ class SystemControl:
             f"Disco C: {disk.percent:.0f}% ({disk.used / 2**30:.1f} GB / {disk.total / 2**30:.1f} GB)",
             f"Procesos: {len(psutil.pids())}",
         ]
-
         gpu = self._powershell("Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name", 5)
         gpus = [x.strip() for x in gpu.stdout.splitlines() if x.strip()]
         if gpus:
             lines.append("GPU: " + "; ".join(gpus))
-
-        temperature = self.cpu_temperature()
-        lines.append(f"Temperatura: {temperature}")
+        lines.append(f"Temperatura: {self.cpu_temperature()}")
         return "\n".join(lines)
 
     def cpu_temperature(self) -> str:
-        # ACPI puede devolver una temperatura de zona, pero no todos los equipos
-        # exponen el sensor real de CPU mediante WMI. No inventamos un valor.
+        # Muchos equipos no exponen el sensor real de CPU por WMI. Nunca inventamos el valor.
         result = self._powershell(
             "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
             "-ErrorAction SilentlyContinue | Select-Object -ExpandProperty CurrentTemperature",
@@ -69,21 +66,36 @@ class SystemControl:
 
     def open_application(self, name: str) -> str:
         aliases = {
-            "calculadora": "calc.exe",
-            "calc": "calc.exe",
-            "bloc de notas": "notepad.exe",
-            "notepad": "notepad.exe",
-            "explorador": "explorer.exe",
-            "explorador de archivos": "explorer.exe",
-            "administrador de tareas": "taskmgr.exe",
-            "configuración": "ms-settings:",
-            "configuracion": "ms-settings:",
-            "settings": "ms-settings:",
-            "panel de control": "control.exe",
-            "cmd": "cmd.exe",
-            "powershell": "powershell.exe",
+            "calculadora": "calc.exe", "calc": "calc.exe",
+            "bloc de notas": "notepad.exe", "notepad": "notepad.exe",
+            "explorador": "explorer.exe", "explorador de archivos": "explorer.exe",
+            "administrador de tareas": "taskmgr.exe", "configuración": "ms-settings:",
+            "configuracion": "ms-settings:", "settings": "ms-settings:",
+            "panel de control": "control.exe", "cmd": "cmd.exe", "powershell": "powershell.exe",
         }
-        target = aliases.get(name.lower().strip(), name.strip())
+        clean_name = name.lower().strip()
+        target = aliases.get(clean_name)
+
+        if target is None:
+            # Permite "abre Spotify", "abre Discord", etc. si Windows lo tiene
+            # registrado en el menú Inicio, sin ejecutar comandos arbitrarios.
+            result = self._powershell(
+                "$n=$args[0]; Get-StartApps | Where-Object {$_.Name -like ('*'+$n+'*')} | Select-Object -First 1 -ExpandProperty AppID",
+                8,
+            )
+            # PowerShell no recibe $args con -Command de forma consistente en todas
+            # las versiones, así que hacemos una búsqueda segura con texto escapado.
+            safe = clean_name.replace("'", "''")
+            result = self._powershell(
+                f"Get-StartApps | Where-Object {{$_.Name -like '*{safe}*'}} | Select-Object -First 1 -ExpandProperty AppID",
+                8,
+            )
+            app_id = result.stdout.strip()
+            if app_id:
+                subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app_id}"], shell=False)
+                return f"Aplicación abierta: {name}."
+            target = shutil.which(name.strip()) or name.strip()
+
         if target.startswith("ms-"):
             os.startfile(target)  # type: ignore[attr-defined]
         else:
@@ -112,7 +124,6 @@ class SystemControl:
         startup_count = 0
         if startup.stdout.strip():
             try:
-                import json
                 data: Any = json.loads(startup.stdout)
                 startup_count = len(data) if isinstance(data, list) else 1
             except Exception:
@@ -133,7 +144,11 @@ class SystemControl:
     def optimize_safe(self) -> str:
         removed = 0
         temp = Path(tempfile.gettempdir())
-        for item in temp.iterdir():
+        try:
+            items = list(temp.iterdir())
+        except OSError:
+            items = []
+        for item in items:
             try:
                 if item.is_file() or item.is_symlink():
                     item.unlink()
