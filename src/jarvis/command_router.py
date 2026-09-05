@@ -96,7 +96,7 @@ class CommandRouter:
 
         if "teams" in lower or "teams.live.com" in lower or "teams.microsoft.com" in lower:
             platform_name = "Teams"
-            default_url = "https://teams.live.com/v2/" if "personal" in lower else "https://teams.microsoft.com/"
+            default_url = "https://teams.live.com/v2/" if "educativo" not in lower and "colegio" not in lower and "escuela" not in lower else "https://teams.microsoft.com/"
         elif "gmail" in lower or "correo" in lower or "email" in lower:
             platform_name = "Gmail"
             default_url = "https://mail.google.com/"
@@ -106,10 +106,9 @@ class CommandRouter:
         url_match = re.search(r"https?://[^\s]+", text, flags=re.IGNORECASE)
         url = url_match.group(0).rstrip(".,)") if url_match else default_url
 
-        # Elimina plataforma/URL de la parte usada para detectar contacto y mensaje.
         remainder = re.sub(r"https?://[^\s]+", " ", text, flags=re.IGNORECASE)
         remainder = re.sub(r"\b(?:teams|microsoft teams|gmail)\b", " ", remainder, flags=re.IGNORECASE)
-        remainder = re.sub(r"\b(?:abre|abrir|en|el|la|navegador|google|chrome|personal)\b", " ", remainder, flags=re.IGNORECASE)
+        remainder = re.sub(r"\b(?:abre|abrir|en|el|la|navegador|google|chrome|personal|educativo|educativa|colegio|escuela)\b", " ", remainder, flags=re.IGNORECASE)
         remainder = re.sub(r"\s+", " ", remainder).strip(" ,:-")
 
         person = "el contacto"
@@ -163,7 +162,7 @@ class CommandRouter:
     @staticmethod
     def _open_intent(text: str) -> str | None:
         for pattern in (
-            r"^(?:abre|abrir|open)\s+(.+)$",
+            r"^(?:abre|abrir|open|entra|entrar|ve|ir)\s+(?:a\s+|al\s+)?(.+)$",
             r"^(?:inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(.+)$",
         ):
             match = re.match(pattern, text, flags=re.IGNORECASE)
@@ -194,17 +193,14 @@ class CommandRouter:
             f"CPU: {cpu:.0f}% en uso",
             f"RAM: {memory.percent:.0f}% usada ({memory.used / (1024**3):.1f} GB / {memory.total / (1024**3):.1f} GB)",
         ]
-
         try:
             disk = psutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\")
             lines.append(f"Disco del sistema: {disk.percent:.0f}% usado ({disk.used / (1024**3):.1f} GB / {disk.total / (1024**3):.1f} GB)")
         except Exception:
             pass
-
         try:
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
+                ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
                 capture_output=True, text=True, timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             gpus = [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -212,7 +208,6 @@ class CommandRouter:
                 lines.append("GPU: " + "; ".join(gpus))
         except Exception:
             pass
-
         return "\n".join(lines)
 
     @staticmethod
@@ -222,14 +217,21 @@ class CommandRouter:
 
         original = target.strip()
         clean = original.lower()
-
-        # Frases naturales: "en Google", "en Chrome", "en el navegador".
         clean = re.sub(r"^(?:en\s+)?(?:el\s+)?(?:navegador|google|chrome)\s+", "", clean).strip()
         clean = re.sub(r"^(?:la|el)\s+aplicación\s+", "", clean).strip()
 
         if re.match(r"^https?://", clean, flags=re.IGNORECASE):
             webbrowser.open(clean, new=2)
             return f"Abriendo {original} en el navegador."
+
+        # Regla de cuentas Teams: "Teams" solo = PERSONAL. Solo las palabras
+        # "educativo/colegio/escuela" envían a la cuenta educativa.
+        teams_educational = any(word in clean for word in ("educativo", "educativa", "colegio", "escuela", "institucional"))
+        if "teams" in clean:
+            url = "https://teams.microsoft.com/" if teams_educational else "https://teams.live.com/v2/"
+            account = "educativo" if teams_educational else "personal"
+            webbrowser.open(url, new=2)
+            return f"Abriendo Teams {account} en el navegador."
 
         websites = {
             "google": "https://www.google.com",
@@ -241,11 +243,6 @@ class CommandRouter:
             "maps": "https://maps.google.com",
             "github": "https://github.com",
             "chatgpt": "https://chatgpt.com",
-            "teams": "https://teams.microsoft.com/",
-            "microsoft teams": "https://teams.microsoft.com/",
-            "mi teams": "https://teams.microsoft.com/",
-            "teams personal": "https://teams.live.com/v2/",
-            "mi teams personal": "https://teams.live.com/v2/",
         }
         if clean in websites:
             webbrowser.open(websites[clean], new=2)
@@ -254,6 +251,11 @@ class CommandRouter:
         browser_target = re.match(r"^(?:en\s+)?(?:google|chrome|navegador)\s+(.+)$", clean)
         if browser_target:
             nested = browser_target.group(1).strip()
+            if "teams" in nested:
+                teams_educational = any(word in nested for word in ("educativo", "educativa", "colegio", "escuela", "institucional"))
+                url = "https://teams.microsoft.com/" if teams_educational else "https://teams.live.com/v2/"
+                webbrowser.open(url, new=2)
+                return f"Abriendo Teams {'educativo' if teams_educational else 'personal'} en el navegador."
             if nested in websites:
                 webbrowser.open(websites[nested], new=2)
                 return f"Abriendo {nested} en el navegador."
