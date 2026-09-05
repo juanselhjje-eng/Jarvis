@@ -5,19 +5,21 @@ import time
 
 from .brain import JarvisBrain
 from .command_router import CommandRouter
+from .evidence import EvidenceBoard
 from .execution import ExecutionTracker, TaskState
 from .hud_futuristic import JarvisHUD
 from .voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas y verificación de tareas."""
+    """Runtime de JARVIS: un solo cerebro, herramientas, misión y verificación."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
         self.tools = CommandRouter()
         self.execution = ExecutionTracker()
+        self.evidence = EvidenceBoard()
         self.voice = VoiceEngine()
         self.hud: JarvisHUD | None = None
         self._command_lock = threading.Lock()
@@ -28,10 +30,17 @@ class Jarvis:
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
-        self.hud = JarvisHUD(brain=self.brain, voice=self.voice, process_command=self.process_command, shutdown=self.shutdown)
-        self.hud.add_message("SYSTEM", f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.")
+        self.hud = JarvisHUD(
+            brain=self.brain,
+            voice=self.voice,
+            process_command=self.process_command,
+            shutdown=self.shutdown,
+            evidence=self.evidence,
+            execution=self.execution,
+        )
+        self.hud.add_message("SYSTEM", f"MISSION CONTROL ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, texto, memoria y herramientas activas.")
         threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
-        threading.Thread(target=self.voice.speak, args=("Sistemas principales iniciados. Te escucho.",), daemon=True).start()
+        threading.Thread(target=self.voice.speak, args=("Mission Control iniciado. Te escucho.",), daemon=True).start()
         self.hud.run()
 
     def process_command(self, command: str) -> None:
@@ -53,6 +62,7 @@ class Jarvis:
             self.execution.set_state(TaskState.INTENT)
             if self.hud:
                 self.hud.set_state("ANALYZING COMMAND")
+
             tool_result = self.tools.handle(command)
 
             if isinstance(tool_result, dict):
@@ -111,7 +121,7 @@ class Jarvis:
             if self.hud:
                 self.hud.set_state("THINKING")
             answer = self.brain.ask(command)
-            self.execution.set_state(TaskState.COMPLETED)
+            self.execution.set_state(TaskState.VERIFYING)
             self.execution.finish(answer, verified=True)
             self.respond(answer)
 
