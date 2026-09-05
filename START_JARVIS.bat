@@ -1,11 +1,14 @@
 @echo off
 setlocal
-cd /d C:\JARVIS
-if not exist .venv\Scripts\activate.bat (
-  echo No existe C:\JARVIS\.venv
-  pause
-  exit /b 1
+cd /d "%~dp0"
+
+if not exist ".venv\Scripts\python.exe" (
+    echo No existe el entorno virtual .venv
+    echo Crea uno con: python -m venv .venv
+    pause
+    exit /b 1
 )
-call .venv\Scripts\activate.bat
-python app.py
+
+call ".venv\Scripts\activate.bat"
+python main.py
 if errorlevel 1 pause
