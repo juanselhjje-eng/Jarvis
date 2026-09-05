@@ -45,6 +45,9 @@ class BrainConfig:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2")
     claude_model: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
+    ollama_max_tokens: int = int(os.getenv("OLLAMA_MAX_TOKENS", "384"))
+    ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+    max_history_messages: int = int(os.getenv("JARVIS_MAX_HISTORY_MESSAGES", "12"))
 
 
 class JarvisBrain:
@@ -76,7 +79,7 @@ class JarvisBrain:
 
     def ollama_available(self) -> bool:
         try:
-            response = self.session.get(self.config.ollama_host, timeout=5)
+            response = self.session.get(self.config.ollama_host, timeout=2)
             return response.ok
         except requests.RequestException:
             return False
@@ -101,9 +104,19 @@ class JarvisBrain:
         self.conversation.clear()
 
     def _ask_ollama(self, messages: list[dict[str, str]]) -> str:
+        payload = {
+            "model": self.config.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": self.config.ollama_keep_alive,
+            "options": {
+                "num_predict": self.config.ollama_max_tokens,
+                "temperature": 0.2,
+            },
+        }
         response = self.session.post(
             f"{self.config.ollama_host}/api/chat",
-            json={"model": self.config.ollama_model, "messages": messages, "stream": False},
+            json=payload,
             timeout=self.config.timeout,
         )
         response.raise_for_status()
@@ -117,7 +130,7 @@ class JarvisBrain:
         user_messages = [m for m in messages if m["role"] != "system"]
         response = client.messages.create(
             model=self.config.claude_model,
-            max_tokens=2048,
+            max_tokens=1024,
             system=SYSTEM_PROMPT,
             messages=user_messages,
         )
@@ -130,6 +143,8 @@ class JarvisBrain:
             return "No recibí ninguna orden."
 
         self.conversation.append({"role": "user", "content": user_message})
+        if len(self.conversation) > self.config.max_history_messages:
+            self.conversation = self.conversation[-self.config.max_history_messages :]
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, *self.conversation]
 
         try:
@@ -143,6 +158,8 @@ class JarvisBrain:
             if not answer:
                 answer = "El proveedor no devolvió una respuesta válida."
             self.conversation.append({"role": "assistant", "content": answer})
+            if len(self.conversation) > self.config.max_history_messages:
+                self.conversation = self.conversation[-self.config.max_history_messages :]
             return answer
         except requests.Timeout:
             return "La respuesta de Ollama tardó demasiado."
