@@ -63,6 +63,11 @@ class Jarvis:
             if self.hud:
                 self.hud.set_state("ANALYZING COMMAND")
 
+            investigation = lowered.startswith(("investiga ", "investiga:", "investigar "))
+            if investigation:
+                self.evidence.start(title=command, query=command)
+                self.evidence.update(self.evidence.latest(), status="RESEARCHING")
+
             tool_result = self.tools.handle(command)
 
             if isinstance(tool_result, dict):
@@ -113,6 +118,9 @@ class Jarvis:
                 self.execution.set_state(TaskState.VERIFYING)
                 response = tool_result
                 verified = not any(marker in response.lower() for marker in ("no pude", "error", "falló", "fallo", "no disponible"))
+                if investigation and self.evidence.latest():
+                    status = "COLLECTING" if verified else "FAILED"
+                    self.evidence.update(self.evidence.latest(), status=status, findings=[response])
                 self.execution.finish(response, verified=verified, success=verified)
                 self.respond(response)
                 return
@@ -122,6 +130,8 @@ class Jarvis:
                 self.hud.set_state("THINKING")
             answer = self.brain.ask(command)
             self.execution.set_state(TaskState.VERIFYING)
+            if investigation and self.evidence.latest():
+                self.evidence.update(self.evidence.latest(), status="ANALYSIS", findings=[answer], conclusion=answer)
             self.execution.finish(answer, verified=True)
             self.respond(answer)
 
