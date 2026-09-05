@@ -4,6 +4,7 @@ __pycache__/
 */__pycache__/
 *.pyc
 *.pyo
+memory.json
 memory/*.db
 memory/*.db-shm
 memory/*.db-wal
