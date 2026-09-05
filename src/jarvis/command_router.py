@@ -13,6 +13,7 @@ import psutil
 
 from .memory import LocalMemory
 from .system_control import SystemControl
+from .teams_automation import TeamsAutomation
 
 
 class CommandRouter:
@@ -21,13 +22,23 @@ class CommandRouter:
     def __init__(self) -> None:
         self.memory = LocalMemory()
         self.system = SystemControl()
+        self.teams = TeamsAutomation()
         self._optimization_pending = False
+        self._message_pending = False
 
     def handle(self, command: str) -> str | dict[str, str] | None:
         text = self._clean_wake_word(command.strip())
         lower = text.lower().strip()
         if not lower:
             return "Dime qué necesitas."
+
+        if self._message_pending:
+            if self._is_confirmation(lower):
+                self._message_pending = False
+                return {"send_message": "teams"}
+            if self._is_rejection(lower):
+                self._message_pending = False
+                return "Mensaje cancelado. No envié nada."
 
         if self._optimization_pending and self._is_confirmation(lower):
             self._optimization_pending = False
@@ -39,6 +50,10 @@ class CommandRouter:
         provider = self._provider_intent(lower)
         if provider:
             return {"provider": provider}
+
+        teams_command = self._teams_intent(text)
+        if teams_command:
+            return teams_command
 
         if self._is_optimization_request(lower):
             self._optimization_pending = True
@@ -100,43 +115,87 @@ class CommandRouter:
         return None
 
     @staticmethod
+    def _is_confirmation(text: str) -> bool:
+        return text in {"sí", "si", "sí envíalo", "si envialo", "envíalo", "envialo", "envía", "envia", "hazlo", "confirmo", "confirmar", "dale", "adelante", "procede", "proceder"}
+
+    @staticmethod
+    def _is_rejection(text: str) -> bool:
+        return text in {"no", "cancela", "cancelar", "no lo hagas", "detente", "para", "parar"}
+
+    def _teams_intent(self, text: str) -> dict[str, str] | None:
+        lower = text.lower()
+        if "teams" not in lower:
+            return None
+
+        educational = any(x in lower for x in ("educativo", "educativa", "colegio", "escuela", "institucional"))
+        has_message_action = bool(re.search(r"\b(?:dile|dile que|dile esto|escríbele|escribele|envíale|enviale|mándale|mandale|manda|envia|envía|escribirle|mandar)\b", lower))
+        has_contact = bool(re.search(r"\b(?:a|para)\s+[\wáéíóúüñÁÉÍÓÚÜÑ ._-]+", text, re.IGNORECASE))
+        if not has_message_action and not has_contact:
+            return None
+
+        person, body = self._extract_contact_and_message(text)
+        if not person or person == "el contacto":
+            return {"communication": "teams", "action": "open", "educational": str(educational)}
+        if not body:
+            return {"communication": "teams", "action": "open_contact", "educational": str(educational), "person": person}
+
+        result = self.teams.prepare_message(person, body, educational=educational)
+        if "El mensaje está escrito" in result:
+            self._message_pending = True
+        return {"communication": "teams", "message": result, "person": person, "body": body, "educational": str(educational), "pending": str(self._message_pending)}
+
+    @staticmethod
+    def _extract_contact_and_message(text: str) -> tuple[str, str]:
+        cleaned = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:jarvis|viernes|microsoft teams|teams)\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:personal|educativo|educativa|colegio|escuela|institucional|en google|en chrome|en el navegador|navegador)\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,:-")
+
+        match = re.search(r"\b(?:a|para)\s+(.+)$", cleaned, flags=re.IGNORECASE)
+        if not match:
+            return "el contacto", ""
+        tail = match.group(1).strip(" ,:-")
+        split = re.search(r"\s+(?:y\s+)?(?:dile(?:\s+que)?|dile esto|que diga|mensaje(?:\s+que)?|escríbele|escribele|envíale|enviale|mándale|mandale|manda|envia|envía|escribirle|mandar)\s*[:,-]?\s*", tail, flags=re.IGNORECASE)
+        if split:
+            person = tail[:split.start()].strip(" ,:-")
+            body = tail[split.end():].strip(" \"'")
+            return person or "el contacto", body
+
+        greeting = re.search(r"\s+(hola\b.*)$", tail, flags=re.IGNORECASE)
+        if greeting:
+            return tail[:greeting.start()].strip(" ,:-"), greeting.group(1).strip()
+        return tail, ""
+
+    @staticmethod
+    def _communication_intent(text: str) -> dict[str, str] | None:
+        lower = text.lower()
+        if "teams" in lower:
+            return None
+        if not re.search(r"\b(?:escríbele|escribele|envíale|enviale|mándale|mandale|envía|envia|manda|escribirle|mandar)\b", lower):
+            return None
+        if "gmail" in lower or "correo" in lower or "email" in lower:
+            platform_name = "Gmail"
+            url = "https://mail.google.com/"
+        else:
+            return None
+        return {"communication": "gmail", "person": "el contacto", "body": "", "url": url, "message": f"Abrí {platform_name} en el navegador. La automatización de Gmail todavía requiere configurar su herramienta específica."}
+
+    @staticmethod
     def _is_system_request(text: str) -> bool:
-        phrases = (
-            "estado del sistema", "estado sistema", "cómo está el sistema", "como esta el sistema",
-            "revisa el sistema", "revisa mi pc", "revisa mi computadora", "revisa mi ordenador",
-            "como esta mi pc", "cómo está mi pc", "como esta mi computadora", "cómo está mi computadora",
-            "como esta el pc", "cómo está el pc", "estado de mi pc", "estado del pc",
-            "especificaciones de mi pc", "especificaciones de mi computadora", "especificaciones de mi ordenador",
-            "especificaciones del pc", "especificaciones de pc", "dime las especificaciones de mi pc",
-            "dime las especificaciones de mi computadora", "qué tiene mi pc", "que tiene mi pc",
-            "información de mi pc", "informacion de mi pc", "información del pc", "informacion del pc",
-            "datos de mi pc", "diagnóstico de mi pc", "diagnostico de mi pc", "revisa mi sistema",
-        )
+        phrases = ("estado del sistema", "estado sistema", "cómo está el sistema", "como esta el sistema", "revisa el sistema", "revisa mi pc", "revisa mi computadora", "revisa mi ordenador", "como esta mi pc", "cómo está mi pc", "como esta mi computadora", "cómo está mi computadora", "como esta el pc", "cómo está el pc", "estado de mi pc", "estado del pc", "especificaciones de mi pc", "especificaciones de mi computadora", "especificaciones de mi ordenador", "especificaciones del pc", "especificaciones de pc", "dime las especificaciones de mi pc", "dime las especificaciones de mi computadora", "qué tiene mi pc", "que tiene mi pc", "información de mi pc", "informacion de mi pc", "información del pc", "informacion del pc", "datos de mi pc", "diagnóstico de mi pc", "diagnostico de mi pc")
         return text in phrases or any(phrase in text for phrase in phrases)
 
     @staticmethod
     def _is_temperature_request(text: str) -> bool:
-        return bool(re.search(r"\b(?:temperatura|temperaturas|caliente|calor)\b", text)) and bool(
-            re.search(r"\b(?:pc|computadora|ordenador|procesador|cpu|sistema)\b", text)
-        )
+        return bool(re.search(r"\b(?:temperatura|temperaturas|caliente|calor)\b", text)) and bool(re.search(r"\b(?:pc|computadora|ordenador|procesador|cpu|sistema)\b", text))
 
     @staticmethod
     def _is_optimization_request(text: str) -> bool:
         return bool(re.search(r"\b(?:optimiza|optimizar|optimízalo|optimizalo|optimización|optimizacion)\b", text))
 
     @staticmethod
-    def _is_confirmation(text: str) -> bool:
-        return text in {"sí", "si", "sí hazlo", "si hazlo", "hazlo", "confirmo", "confirmar", "dale", "adelante", "procede", "proceder"}
-
-    @staticmethod
-    def _is_rejection(text: str) -> bool:
-        return text in {"no", "cancela", "cancelar", "no lo hagas", "detente", "para", "parar"}
-
-    @staticmethod
     def _is_wallpaper_request(text: str) -> bool:
-        return bool(re.search(r"\b(?:fondo de pantalla|fondo|wallpaper)\b", text)) and bool(
-            re.search(r"\b(?:cambia|cambiar|pon|poner|usa|usar|establece|establecer)\b", text)
-        )
+        return bool(re.search(r"\b(?:fondo de pantalla|fondo|wallpaper)\b", text)) and bool(re.search(r"\b(?:cambia|cambiar|pon|poner|usa|usar|establece|establecer)\b", text))
 
     @staticmethod
     def _extract_wallpaper_path(text: str) -> str | None:
@@ -154,42 +213,6 @@ class CommandRouter:
         target = match.group(1).strip().lower()
         known = {"calculadora", "calc", "bloc de notas", "notepad", "explorador", "explorador de archivos", "administrador de tareas", "configuración", "configuracion", "settings", "panel de control", "cmd", "powershell"}
         return target if target in known else None
-
-    @staticmethod
-    def _communication_intent(text: str) -> dict[str, str] | None:
-        lower = text.lower()
-        if not re.search(r"\b(?:escríbele|escribele|envíale|enviale|mándale|mandale|envía|envia|manda|escribirle|mandar)\b", lower):
-            return None
-        if "teams" in lower or "teams.live.com" in lower or "teams.microsoft.com" in lower:
-            platform_name = "Teams"
-            default_url = "https://teams.microsoft.com/" if any(x in lower for x in ("educativo", "educativa", "colegio", "escuela", "institucional")) else "https://teams.live.com/v2/"
-        elif "gmail" in lower or "correo" in lower or "email" in lower:
-            platform_name = "Gmail"
-            default_url = "https://mail.google.com/"
-        else:
-            return None
-        url_match = re.search(r"https?://[^\s]+", text, flags=re.IGNORECASE)
-        url = url_match.group(0).rstrip(".,)") if url_match else default_url
-        remainder = re.sub(r"https?://[^\s]+", " ", text, flags=re.IGNORECASE)
-        remainder = re.sub(r"\b(?:teams|microsoft teams|gmail)\b", " ", remainder, flags=re.IGNORECASE)
-        remainder = re.sub(r"\b(?:abre|abrir|en|el|la|navegador|google|chrome|personal|educativo|educativa|colegio|escuela)\b", " ", remainder, flags=re.IGNORECASE)
-        remainder = re.sub(r"\s+", " ", remainder).strip(" ,:-")
-        person, body = "el contacto", ""
-        person_match = re.search(r"\b(?:a|para)\s+(.+)$", remainder, flags=re.IGNORECASE)
-        if person_match:
-            tail_text = person_match.group(1).strip()
-            split = re.search(r"\s+(?:y\s+)?(?:dile|dile que|dile esto|que diga|mensaje|mensaje que|escríbele|escribele|envíale|enviale|mándale|mandale)\b\s*[:,-]?\s*", tail_text, flags=re.IGNORECASE)
-            if split:
-                person, body = tail_text[:split.start()].strip(" ,:-"), tail_text[split.end():].strip()
-            else:
-                greeting = re.search(r"\s+(hola\b.*)$", tail_text, flags=re.IGNORECASE)
-                if greeting:
-                    person, body = tail_text[:greeting.start()].strip(" ,:-"), greeting.group(1).strip()
-                else:
-                    person = tail_text.strip(" ,:-") or person
-        webbrowser.open(url, new=2)
-        message = f"Abrí {platform_name} en el navegador. Contacto: {person}. " + (f"Mensaje preparado: \"{body}\". No lo enviaré sin tu confirmación explícita." if body else "Falta el texto del mensaje.")
-        return {"communication": platform_name.lower(), "person": person, "body": body, "url": url, "message": message}
 
     @staticmethod
     def _search_intent(text: str) -> str | None:
@@ -227,46 +250,24 @@ class CommandRouter:
             lines.append(f"Disco del sistema: {disk.percent:.0f}% usado ({disk.used / (1024**3):.1f} GB / {disk.total / (1024**3):.1f} GB)")
         except Exception:
             pass
-        try:
-            result = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"], capture_output=True, text=True, timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            gpus = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            if gpus:
-                lines.append("GPU: " + "; ".join(gpus))
-        except Exception:
-            pass
         return "\n".join(lines)
 
     @staticmethod
     def open_target(target: str) -> str:
-        if not target:
-            return "No indicaste qué abrir."
         original = target.strip()
-        clean = original.lower()
-        clean = re.sub(r"^(?:en\s+)?(?:el\s+)?(?:navegador|google|chrome)\s+", "", clean).strip()
+        clean = re.sub(r"^(?:en\s+)?(?:el\s+)?(?:navegador|google|chrome)\s+", "", original.lower()).strip()
         clean = re.sub(r"^(?:la|el)\s+aplicación\s+", "", clean).strip()
         if re.match(r"^https?://", clean, flags=re.IGNORECASE):
             webbrowser.open(clean, new=2)
             return f"Abriendo {original} en el navegador."
-        teams_educational = any(word in clean for word in ("educativo", "educativa", "colegio", "escuela", "institucional"))
         if "teams" in clean:
-            url = "https://teams.microsoft.com/" if teams_educational else "https://teams.live.com/v2/"
-            account = "educativo" if teams_educational else "personal"
-            webbrowser.open(url, new=2)
-            return f"Abriendo Teams {account} en el navegador."
+            educational = any(x in clean for x in ("educativo", "educativa", "colegio", "escuela", "institucional"))
+            webbrowser.open("https://teams.microsoft.com/" if educational else "https://teams.live.com/v2/", new=2)
+            return f"Abriendo Teams {'educativo' if educational else 'personal'} en el navegador."
         websites = {"google": "https://www.google.com", "google chrome": "https://www.google.com", "chrome": "https://www.google.com", "youtube": "https://www.youtube.com", "gmail": "https://mail.google.com", "google maps": "https://maps.google.com", "maps": "https://maps.google.com", "github": "https://github.com", "chatgpt": "https://chatgpt.com"}
         if clean in websites:
             webbrowser.open(websites[clean], new=2)
             return f"Abriendo {original} en el navegador."
-        browser_target = re.match(r"^(?:en\s+)?(?:google|chrome|navegador)\s+(.+)$", clean)
-        if browser_target:
-            nested = browser_target.group(1).strip()
-            if "teams" in nested:
-                educational = any(word in nested for word in ("educativo", "educativa", "colegio", "escuela", "institucional"))
-                webbrowser.open("https://teams.microsoft.com/" if educational else "https://teams.live.com/v2/", new=2)
-                return f"Abriendo Teams {'educativo' if educational else 'personal'} en el navegador."
-            if nested in websites:
-                webbrowser.open(websites[nested], new=2)
-                return f"Abriendo {nested} en el navegador."
         path = Path(os.path.expandvars(os.path.expanduser(original)))
         try:
             if path.exists():
