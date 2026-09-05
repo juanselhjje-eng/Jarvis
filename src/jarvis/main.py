@@ -7,7 +7,7 @@ from .brain import JarvisBrain
 from .command_router import CommandRouter
 from .evidence import EvidenceBoard
 from .execution import ExecutionTracker, TaskState
-from .hud_futuristic import JarvisHUD
+from .hud_command import JarvisHUD
 from .voice_engine import VoiceEngine
 
 
@@ -27,7 +27,7 @@ class Jarvis:
 
     def start(self) -> None:
         if not self.brain.is_available():
-            message = "El proveedor configurado no está disponible. Revisa Ollama o Claude."
+            message = "El cerebro Gemini no está configurado y Ollama no está disponible."
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
@@ -42,13 +42,11 @@ class Jarvis:
         )
         self.hud.add_message("SYSTEM", f"MISSION CONTROL ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, texto, memoria y herramientas activas.")
 
-        # El saludo termina antes de activar el micrófono. Así el reconocimiento no
-        # puede capturar el propio TTS de JARVIS durante el arranque.
-        self.hud.set_state("HABLANDO")
+        self.hud.set_state("SPEAKING")
         self.voice.speak("Mission Control iniciado. Te escucho.")
         if not self.running:
             return
-        self.hud.set_state("CALMADO")
+        self.hud.set_state("STANDBY")
         threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
         self.hud.run()
 
@@ -57,7 +55,7 @@ class Jarvis:
         if not command or not self.running:
             return
         lowered = command.lower().strip()
-        if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
+        if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte", "cierrate", "ciérrate"}:
             self.shutdown()
             return
         if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
@@ -70,7 +68,7 @@ class Jarvis:
             self.execution.start(command)
             self.execution.set_state(TaskState.INTENT)
             if self.hud:
-                self.hud.set_state("ANALYZING COMMAND")
+                self.hud.set_state("ANALYZING")
 
             investigation = lowered.startswith(("investiga ", "investiga:", "investigar "))
             if investigation:
@@ -84,6 +82,8 @@ class Jarvis:
                     try:
                         self.execution.set_state(TaskState.EXECUTING)
                         provider = self.brain.set_provider(str(tool_result["provider"]))
+                        if self.hud:
+                            self.hud.update_provider()
                         response = f"Entendido. Ahora usaré {provider}."
                         self.execution.finish(response, verified=True)
                         self.respond(response)
@@ -151,11 +151,6 @@ class Jarvis:
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True, name="jarvis-tts").start()
 
     def run_voice_loop(self) -> None:
-        """Escucha continuamente mientras JARVIS esté activo.
-
-        El bucle no termina por una frase normal ni por un fallo puntual del
-        reconocimiento. Solo se detiene cuando running pasa a False.
-        """
         while self.running:
             if not self._voice_command_lock.acquire(blocking=False):
                 time.sleep(0.15)
@@ -165,15 +160,15 @@ class Jarvis:
                     time.sleep(0.25)
                     continue
                 if self.hud:
-                    self.hud.set_state("ESCUCHANDO")
+                    self.hud.set_state("LISTENING")
                 command = self.voice.listen_for_command(seconds=5)
                 if command and self.running:
                     if self.hud:
                         self.hud.add_message("USER", command)
-                        self.hud.set_state("PROCESANDO")
+                        self.hud.set_state("PROCESSING")
                     self.process_command(command)
                 elif self.hud and self.running:
-                    self.hud.set_state("CALMADO")
+                    self.hud.set_state("STANDBY")
             except KeyboardInterrupt:
                 self.shutdown()
                 return
@@ -181,7 +176,7 @@ class Jarvis:
                 print(f"[VOICE] Error: {exc}")
                 if self.hud:
                     self.hud.add_message("VOICE", f"Error de reconocimiento: {exc}")
-                    self.hud.set_state("CALMADO")
+                    self.hud.set_state("STANDBY")
                 time.sleep(1)
             finally:
                 self._voice_command_lock.release()
