@@ -71,10 +71,22 @@ class CommandRouter:
 
     @staticmethod
     def _is_system_request(text: str) -> bool:
-        return text in {
-            "estado del sistema", "estado sistema", "cómo está el sistema", "como esta el sistema",
-            "revisa el sistema", "revisa mi pc", "revisa mi computadora",
-        }
+        return (
+            text in {
+                "estado del sistema", "estado sistema", "cómo está el sistema", "como esta el sistema",
+                "revisa el sistema", "revisa mi pc", "revisa mi computadora",
+                "especificaciones de mi pc", "especificaciones de mi computadora",
+                "especificaciones de mi ordenador", "especificaciones del pc",
+                "especificaciones de pc", "dime las especificaciones de mi pc",
+                "dime las especificaciones de mi computadora", "qué tiene mi pc",
+                "que tiene mi pc", "información de mi pc", "informacion de mi pc",
+                "información del pc", "informacion del pc", "datos de mi pc",
+            }
+            or any(phrase in text for phrase in (
+                "especificaciones de mi pc", "especificaciones de mi computadora",
+                "especificaciones del pc", "información de mi pc", "informacion de mi pc",
+            ))
+        )
 
     @staticmethod
     def _communication_intent(text: str) -> dict[str, str] | None:
@@ -84,7 +96,7 @@ class CommandRouter:
 
         if "teams" in lower or "teams.live.com" in lower or "teams.microsoft.com" in lower:
             platform_name = "Teams"
-            default_url = "https://teams.microsoft.com/"
+            default_url = "https://teams.live.com/v2/" if "personal" in lower else "https://teams.microsoft.com/"
         elif "gmail" in lower or "correo" in lower or "email" in lower:
             platform_name = "Gmail"
             default_url = "https://mail.google.com/"
@@ -94,30 +106,32 @@ class CommandRouter:
         url_match = re.search(r"https?://[^\s]+", text, flags=re.IGNORECASE)
         url = url_match.group(0).rstrip(".,)") if url_match else default_url
 
+        # Elimina plataforma/URL de la parte usada para detectar contacto y mensaje.
+        remainder = re.sub(r"https?://[^\s]+", " ", text, flags=re.IGNORECASE)
+        remainder = re.sub(r"\b(?:teams|microsoft teams|gmail)\b", " ", remainder, flags=re.IGNORECASE)
+        remainder = re.sub(r"\b(?:abre|abrir|en|el|la|navegador|google|chrome|personal)\b", " ", remainder, flags=re.IGNORECASE)
+        remainder = re.sub(r"\s+", " ", remainder).strip(" ,:-")
+
         person = "el contacto"
         body = ""
-        person_match = re.search(r"\b(?:a|para)\s+(.+)$", text, flags=re.IGNORECASE)
+        person_match = re.search(r"\b(?:a|para)\s+(.+)$", remainder, flags=re.IGNORECASE)
         if person_match:
-            remainder = person_match.group(1).strip()
+            tail_text = person_match.group(1).strip()
             split = re.search(
-                r"\s+(?:y\s+)?(?:dile|dile que|que diga|mensaje|mensaje que|hola)\b\s*[:,-]?\s*",
-                remainder,
+                r"\s+(?:y\s+)?(?:dile|dile que|dile esto|que diga|mensaje|mensaje que|escríbele|escribele|envíale|enviale|mándale|mandale)\b\s*[:,-]?\s*",
+                tail_text,
                 flags=re.IGNORECASE,
             )
             if split:
-                person = remainder[:split.start()].strip(" ,:-") or person
-                tail = remainder[split.end():].strip()
-                if remainder[split.start():].lstrip().lower().startswith("hola"):
-                    body = "hola" + (f" {tail}" if tail else "")
-                else:
-                    body = tail
+                person = tail_text[:split.start()].strip(" ,:-") or person
+                body = tail_text[split.end():].strip()
             else:
-                greeting = re.search(r"\s+(hola\b.*)$", remainder, flags=re.IGNORECASE)
+                greeting = re.search(r"\s+(hola\b.*)$", tail_text, flags=re.IGNORECASE)
                 if greeting:
-                    person = remainder[:greeting.start()].strip(" ,:-") or person
+                    person = tail_text[:greeting.start()].strip(" ,:-") or person
                     body = greeting.group(1).strip()
                 else:
-                    person = remainder.strip(" ,:-") or person
+                    person = tail_text.strip(" ,:-") or person
 
         webbrowser.open(url, new=2)
         if body:
@@ -173,7 +187,33 @@ class CommandRouter:
     def system_status() -> str:
         memory = psutil.virtual_memory()
         cpu = psutil.cpu_percent(interval=0.2)
-        return f"Sistema: {platform.system()} {platform.release()}. CPU: {cpu:.0f}%. RAM: {memory.percent:.0f}% usada."
+        lines = [
+            f"Sistema: {platform.system()} {platform.release()}",
+            f"Equipo: {platform.node()}",
+            f"Procesador: {platform.processor() or 'No disponible'}",
+            f"CPU: {cpu:.0f}% en uso",
+            f"RAM: {memory.percent:.0f}% usada ({memory.used / (1024**3):.1f} GB / {memory.total / (1024**3):.1f} GB)",
+        ]
+
+        try:
+            disk = psutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\")
+            lines.append(f"Disco del sistema: {disk.percent:.0f}% usado ({disk.used / (1024**3):.1f} GB / {disk.total / (1024**3):.1f} GB)")
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
+                capture_output=True, text=True, timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            gpus = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            if gpus:
+                lines.append("GPU: " + "; ".join(gpus))
+        except Exception:
+            pass
+
+        return "\n".join(lines)
 
     @staticmethod
     def open_target(target: str) -> str:
@@ -183,9 +223,9 @@ class CommandRouter:
         original = target.strip()
         clean = original.lower()
 
-        # "en Google", "en Chrome" y "en el navegador" significan abrir la web,
-        # no buscar una aplicación llamada literalmente así.
+        # Frases naturales: "en Google", "en Chrome", "en el navegador".
         clean = re.sub(r"^(?:en\s+)?(?:el\s+)?(?:navegador|google|chrome)\s+", "", clean).strip()
+        clean = re.sub(r"^(?:la|el)\s+aplicación\s+", "", clean).strip()
 
         if re.match(r"^https?://", clean, flags=re.IGNORECASE):
             webbrowser.open(clean, new=2)
