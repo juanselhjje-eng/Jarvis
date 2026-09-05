@@ -40,18 +40,18 @@ REGLAS
 
 @dataclass
 class BrainConfig:
-    provider: str = os.getenv("JARVIS_PROVIDER", "ollama").strip().lower()
+    # Claude is the default provider. Ollama remains available as an optional local provider.
+    provider: str = os.getenv("JARVIS_PROVIDER", "claude").strip().lower()
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2")
     claude_model: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
-    ollama_max_tokens: int = int(os.getenv("OLLAMA_MAX_TOKENS", "384"))
     ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
     max_history_messages: int = int(os.getenv("JARVIS_MAX_HISTORY_MESSAGES", "12"))
 
 
 class JarvisBrain:
-    """Único cerebro de JARVIS; Ollama y Claude son proveedores, no agentes."""
+    """Único cerebro de JARVIS; Claude y Ollama son proveedores, no agentes."""
 
     def __init__(self, config: BrainConfig | None = None) -> None:
         self.config = config or BrainConfig()
@@ -109,10 +109,7 @@ class JarvisBrain:
             "messages": messages,
             "stream": False,
             "keep_alive": self.config.ollama_keep_alive,
-            "options": {
-                "num_predict": self.config.ollama_max_tokens,
-                "temperature": 0.2,
-            },
+            "options": {"temperature": 0.2},
         }
         response = self.session.post(
             f"{self.config.ollama_host}/api/chat",
