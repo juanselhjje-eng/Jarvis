@@ -23,6 +23,7 @@ class Jarvis:
         self.voice = VoiceEngine()
         self.hud: JarvisHUD | None = None
         self._command_lock = threading.Lock()
+        self._voice_command_lock = threading.Lock()
 
     def start(self) -> None:
         if not self.brain.is_available():
@@ -30,6 +31,7 @@ class Jarvis:
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
+
         self.hud = JarvisHUD(
             brain=self.brain,
             voice=self.voice,
@@ -39,8 +41,15 @@ class Jarvis:
             execution=self.execution,
         )
         self.hud.add_message("SYSTEM", f"MISSION CONTROL ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, texto, memoria y herramientas activas.")
+
+        # El saludo termina antes de activar el micrófono. Así el reconocimiento no
+        # puede capturar el propio TTS de JARVIS durante el arranque.
+        self.hud.set_state("HABLANDO")
+        self.voice.speak("Mission Control iniciado. Te escucho.")
+        if not self.running:
+            return
+        self.hud.set_state("CALMADO")
         threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
-        threading.Thread(target=self.voice.speak, args=("Mission Control iniciado. Te escucho.",), daemon=True).start()
         self.hud.run()
 
     def process_command(self, command: str) -> None:
@@ -142,29 +151,40 @@ class Jarvis:
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True, name="jarvis-tts").start()
 
     def run_voice_loop(self) -> None:
+        """Escucha continuamente mientras JARVIS esté activo.
+
+        El bucle no termina por una frase normal ni por un fallo puntual del
+        reconocimiento. Solo se detiene cuando running pasa a False.
+        """
         while self.running:
+            if not self._voice_command_lock.acquire(blocking=False):
+                time.sleep(0.15)
+                continue
             try:
                 if self.voice.is_speaking:
                     time.sleep(0.25)
                     continue
                 if self.hud:
-                    self.hud.set_state("LISTENING")
+                    self.hud.set_state("ESCUCHANDO")
                 command = self.voice.listen_for_command(seconds=5)
-                if command:
+                if command and self.running:
                     if self.hud:
                         self.hud.add_message("USER", command)
-                        self.hud.set_state("PROCESSING COMMAND")
+                        self.hud.set_state("PROCESANDO")
                     self.process_command(command)
-                elif self.hud:
-                    self.hud.set_state("SYSTEM READY")
+                elif self.hud and self.running:
+                    self.hud.set_state("CALMADO")
             except KeyboardInterrupt:
                 self.shutdown()
                 return
             except Exception as exc:
                 print(f"[VOICE] Error: {exc}")
                 if self.hud:
-                    self.hud.add_message("VOICE", f"Error: {exc}")
+                    self.hud.add_message("VOICE", f"Error de reconocimiento: {exc}")
+                    self.hud.set_state("CALMADO")
                 time.sleep(1)
+            finally:
+                self._voice_command_lock.release()
 
     def shutdown(self) -> None:
         if not self.running:
