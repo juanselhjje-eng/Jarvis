@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from brain import JarvisBrain
 from command_router import CommandRouter
@@ -8,7 +9,7 @@ from voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime principal: un solo cerebro + herramientas deterministas."""
+    """Runtime de JARVIS: un solo cerebro y herramientas deterministas."""
 
     def __init__(self) -> None:
         self.running = True
@@ -26,18 +27,15 @@ class Jarvis:
         print(f"[SYSTEM] Claude: {self.brain.config.claude_model}")
 
         if not self.brain.is_available():
-            message = (
-                "El proveedor configurado no está disponible. "
-                "Revisa Ollama o la configuración de Claude."
-            )
+            message = "El proveedor configurado no está disponible. Revisa Ollama o Claude."
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
 
-        self.voice.speak("Sistemas principales iniciados.")
-        print("[SYSTEM] Listo. Háblame o escribe normalmente. Por ejemplo: Jarvis, abre Google.")
-        print("[SYSTEM] Voz: escribe 'voz' para escuchar durante unos segundos.")
-        self.run_console()
+        self.voice.speak("Sistemas principales iniciados. Te escucho.")
+        print("[SYSTEM] Modo conversación activo. Di 'Jarvis' o 'Viernes' seguido de tu orden.")
+        print("[SYSTEM] Ctrl+C para detener.")
+        self.run_voice_loop()
 
     def process_command(self, command: str) -> None:
         command = command.strip()
@@ -45,70 +43,57 @@ class Jarvis:
             return
 
         lowered = command.lower().strip()
-        if lowered in {"salir", "exit", "quit", "/salir", "jarvis apágate", "jarvis apagarte"}:
+        if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
 
-        if lowered in {
-            "/limpiar",
-            "limpiar conversación",
-            "limpia la conversación",
-            "borra la conversación",
-            "olvida esta conversación",
-        }:
+        if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
             self.brain.reset_conversation()
-            self.voice.speak("Conversación limpiada.")
-            print("[SYSTEM] Historial eliminado.")
-            return
-
-        if lowered in {"/voz", "voz", "modo voz", "escúchame", "escuchame"}:
-            self.run_voice_once()
+            self.respond("Conversación limpiada.")
             return
 
         with self._command_lock:
             print(f"[USER] {command}")
-
-            # El router solo detecta herramientas deterministas; no es otro agente.
             tool_result = self.tools.handle(command)
 
-            if isinstance(tool_result, dict) and tool_result.get("provider"):
-                try:
-                    provider = self.brain.set_provider(str(tool_result["provider"]))
-                    answer = f"Entendido. Ahora usaré {provider}."
-                except (ValueError, RuntimeError) as exc:
-                    answer = str(exc)
-                print(f"[JARVIS] {answer}\n")
-                self.voice.speak(answer)
-                return
+            if isinstance(tool_result, dict):
+                if tool_result.get("provider"):
+                    try:
+                        provider = self.brain.set_provider(str(tool_result["provider"]))
+                        self.respond(f"Entendido. Ahora usaré {provider}.")
+                    except (ValueError, RuntimeError) as exc:
+                        self.respond(str(exc))
+                    return
+
+                if tool_result.get("communication"):
+                    message = str(tool_result.get("message", "Abrí la aplicación."))
+                    self.respond(message)
+                    print("[ACTION] No envío mensajes automáticamente: el envío necesita confirmación explícita.")
+                    return
 
             if isinstance(tool_result, str):
-                answer = tool_result
-            else:
-                answer = self.brain.ask(command)
+                self.respond(tool_result)
+                return
 
-            print(f"[JARVIS] {answer}\n")
-            self.voice.speak(answer)
+            answer = self.brain.ask(command)
+            self.respond(answer)
 
-    def run_console(self) -> None:
+    def respond(self, text: str) -> None:
+        print(f"[JARVIS] {text}\n")
+        self.voice.speak(text)
+
+    def run_voice_loop(self) -> None:
         while self.running:
             try:
-                self.process_command(input("Tú > "))
-            except (KeyboardInterrupt, EOFError):
+                command = self.voice.listen_for_command(seconds=7)
+                if command:
+                    self.process_command(command)
+            except KeyboardInterrupt:
                 self.shutdown()
             except Exception as exc:
-                print(f"[SYSTEM] Error: {exc}")
-                self.voice.speak("Se produjo un error al procesar la orden.")
-
-    def run_voice_once(self) -> None:
-        try:
-            command = self.voice.listen_for_command(seconds=7)
-            if command:
-                self.process_command(command)
-            else:
-                print("[VOICE] No se detectó una orden con Jarvis o Viernes.")
-        except Exception as exc:
-            print(f"[VOICE] Error: {exc}")
-            self.voice.speak("No pude procesar la entrada de voz.")
+                print(f"[VOICE] Error: {exc}")
+                self.voice.speak("Tuve un problema con el sistema de voz. Intentaré de nuevo.")
+                time.sleep(1)
 
     def shutdown(self) -> None:
         if not self.running:
