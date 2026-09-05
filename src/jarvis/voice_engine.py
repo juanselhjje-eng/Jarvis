@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -31,7 +32,6 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es").strip()
 SAMPLE_RATE = 16000
 WAKE_WORDS = tuple(word.strip().lower() for word in os.getenv("JARVIS_WAKE_WORDS", "jarvis,viernes").split(",") if word.strip())
-
 TTS_PROVIDER = os.getenv("JARVIS_TTS", "elevenlabs").strip().lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "W5JElH3dK1UYYAiHH7uh").strip()
@@ -114,10 +114,9 @@ class VoiceEngine:
             try:
                 if TTS_PROVIDER == "elevenlabs" and self._speak_elevenlabs(text):
                     return
-                if self.tts is None:
-                    return
-                self.tts.say(text)
-                self.tts.runAndWait()
+                if self.tts is not None:
+                    self.tts.say(text)
+                    self.tts.runAndWait()
             except Exception as exc:
                 print(f"[VOICE] Error TTS local: {exc}")
             finally:
@@ -145,8 +144,7 @@ class VoiceEngine:
         return self.transcribe(self.record(seconds))
 
     def has_wake_word(self, text: str) -> bool:
-        normalized = text.lower()
-        return any(re.search(rf"\b{re.escape(word)}\b", normalized) for word in WAKE_WORDS)
+        return any(re.search(rf"\b{re.escape(word)}\b", text.lower()) for word in WAKE_WORDS)
 
     def remove_wake_word(self, text: str) -> str:
         result = text
@@ -156,8 +154,7 @@ class VoiceEngine:
 
     def listen_for_command(self, seconds: float = 7.0) -> Optional[str]:
         while self.is_speaking:
-            if not self._speaking.wait(timeout=0.1):
-                break
+            time.sleep(0.1)
         text = self.listen(seconds)
         print(f"[VOICE] Reconocido: {text}")
         if not text or not self.has_wake_word(text):
