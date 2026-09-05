@@ -15,8 +15,8 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile current Python runtime
-        run: python -m compileall -q *.py
+        run: python -m compileall -q src main.py
       - name: Verify secrets and generated runtime files are not tracked
         shell: bash
         run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.pyc|__pycache__/|memory\.json)$'
+          ! git ls-files | grep -E '(^|/)(\.env|.*\.pyc|__pycache__/|memory\.json|evidence\.json|execution_log\.jsonl)$'
