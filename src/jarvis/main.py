@@ -33,34 +33,21 @@ class Jarvis:
             process_command=self.process_command,
             shutdown=self.shutdown,
         )
-        self.hud.add_message(
-            "SYSTEM",
-            f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.",
-        )
+        self.hud.add_message("SYSTEM", f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.")
 
-        # Escucha de voz continua en segundo plano. Whisper solo activa una orden
-        # cuando detecta la palabra de activación configurada (Jarvis/Viernes).
         threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
-        threading.Thread(
-            target=self.voice.speak,
-            args=("Sistemas principales iniciados. Te escucho.",),
-            daemon=True,
-        ).start()
+        threading.Thread(target=self.voice.speak, args=("Sistemas principales iniciados. Te escucho.",), daemon=True).start()
         self.hud.run()
 
     def process_command(self, command: str) -> None:
         command = command.strip()
         if not command or not self.running:
             return
-
         lowered = command.lower().strip()
         if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
-        if lowered in {
-            "limpiar conversación", "limpia la conversación",
-            "borra la conversación", "olvida esta conversación",
-        }:
+        if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
             self.brain.reset_conversation()
             self.respond("Conversación limpiada.")
             return
@@ -80,10 +67,26 @@ class Jarvis:
                         self.respond(str(exc))
                     return
 
+                if tool_result.get("send_message") == "teams":
+                    self.respond(self.tools.teams.send_draft())
+                    return
+
+                if tool_result.get("communication") == "teams":
+                    action = tool_result.get("action")
+                    educational = tool_result.get("educational") == "True"
+                    if action == "open":
+                        self.respond(self.tools.teams.open(educational))
+                        return
+                    if action == "open_contact":
+                        person = tool_result.get("person", "el contacto")
+                        result = self.tools.teams.prepare_message(person, "", educational=educational)
+                        self.respond(result)
+                        return
+                    self.respond(str(tool_result.get("message", "Procesando Teams.")))
+                    return
+
                 if tool_result.get("communication"):
-                    message = str(tool_result.get("message", "Abrí la aplicación."))
-                    self.respond(message)
-                    print("[ACTION] No envío mensajes automáticamente: el envío necesita confirmación explícita.")
+                    self.respond(str(tool_result.get("message", "Abrí la aplicación.")))
                     return
 
             if isinstance(tool_result, str):
@@ -105,6 +108,9 @@ class Jarvis:
         """Modo manos libres: escucha continuamente y exige palabra de activación."""
         while self.running:
             try:
+                if self.voice.is_speaking:
+                    time.sleep(0.25)
+                    continue
                 if self.hud:
                     self.hud.set_state("LISTENING")
                 command = self.voice.listen_for_command(seconds=5)
