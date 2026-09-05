@@ -12,9 +12,9 @@ except ImportError:  # pragma: no cover
     load_dotenv = None
 
 try:
-    import anthropic
+    from google import genai
 except ImportError:  # pragma: no cover
-    anthropic = None
+    genai = None
 
 if load_dotenv:
     load_dotenv()
@@ -40,45 +40,42 @@ REGLAS
 
 @dataclass
 class BrainConfig:
-    # Claude es el proveedor principal. Ollama puede actuar como respaldo por solicitud.
-    provider: str = os.getenv("JARVIS_PROVIDER", "claude").strip().lower()
+    # Gemini is the primary cloud provider. Ollama remains the local fallback.
+    provider: str = os.getenv("JARVIS_PROVIDER", "gemini").strip().lower()
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2")
-    claude_model: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
     ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
     max_history_messages: int = int(os.getenv("JARVIS_MAX_HISTORY_MESSAGES", "12"))
-    fallback_to_ollama: bool = os.getenv("JARVIS_CLAUDE_FALLBACK_OLLAMA", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
 
 
 class JarvisBrain:
-    """Único cerebro de JARVIS; Claude y Ollama son proveedores, no agentes."""
+    """Único cerebro de JARVIS; Gemini y Ollama son proveedores, no agentes."""
 
     def __init__(self, config: BrainConfig | None = None) -> None:
         self.config = config or BrainConfig()
         self.conversation: list[dict[str, str]] = []
         self.session = requests.Session()
-        self._claude = None
+        self._gemini = None
 
     @property
     def provider(self) -> str:
         return self.config.provider
 
-    def _claude_client(self):
-        if self._claude is not None:
-            return self._claude
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    def _gemini_client(self):
+        if self._gemini is not None:
+            return self._gemini
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             return None
-        if anthropic is None:
-            raise RuntimeError("Falta instalar el paquete anthropic.")
-        self._claude = anthropic.Anthropic(api_key=api_key)
-        return self._claude
+        if genai is None:
+            raise RuntimeError("Falta instalar el paquete google-genai.")
+        self._gemini = genai.Client(api_key=api_key)
+        return self._gemini
 
-    def claude_available(self) -> bool:
-        return bool(os.getenv("ANTHROPIC_API_KEY", "").strip()) and anthropic is not None
+    def gemini_available(self) -> bool:
+        return bool(os.getenv("GEMINI_API_KEY", "").strip()) and genai is not None
 
     def ollama_available(self) -> bool:
         try:
@@ -88,18 +85,16 @@ class JarvisBrain:
             return False
 
     def is_available(self) -> bool:
-        if self.provider == "claude":
-            return self.claude_available() or (
-                self.config.fallback_to_ollama and self.ollama_available()
-            )
+        if self.provider == "gemini":
+            return self.gemini_available() or self.ollama_available()
         return self.ollama_available()
 
     def set_provider(self, provider: str) -> str:
         provider = provider.strip().lower()
-        if provider not in {"ollama", "claude"}:
-            raise ValueError("Proveedor no válido. Usa ollama o claude.")
-        if provider == "claude" and not self.claude_available():
-            raise RuntimeError("Claude no está configurado. Añade ANTHROPIC_API_KEY al archivo .env.")
+        if provider not in {"ollama", "gemini"}:
+            raise ValueError("Proveedor no válido. Usa gemini u ollama.")
+        if provider == "gemini" and not self.gemini_available():
+            raise RuntimeError("Gemini no está configurado. Añade GEMINI_API_KEY al archivo .env.")
         if provider == "ollama" and not self.ollama_available():
             raise RuntimeError("Ollama no está disponible.")
         self.config.provider = provider
@@ -108,10 +103,27 @@ class JarvisBrain:
     def reset_conversation(self) -> None:
         self.conversation.clear()
 
-    def _ask_ollama(self, messages: list[dict[str, str]]) -> str:
+    def _history_text(self) -> str:
+        return "\n".join(
+            f"{'Usuario' if m['role'] == 'user' else 'J.A.R.V.I.S.'}: {m['content']}"
+            for m in self.conversation
+        )
+
+    def _ask_gemini(self) -> str:
+        client = self._gemini_client()
+        if client is None:
+            raise RuntimeError("Gemini no está configurado.")
+        prompt = f"{SYSTEM_PROMPT}\n\nHISTORIAL:\n{self._history_text()}"
+        response = client.models.generate_content(
+            model=self.config.gemini_model,
+            contents=prompt,
+        )
+        return str(getattr(response, "text", "") or "").strip()
+
+    def _ask_ollama(self) -> str:
         payload = {
             "model": self.config.ollama_model,
-            "messages": messages,
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *self.conversation],
             "stream": False,
             "keep_alive": self.config.ollama_keep_alive,
             "options": {"temperature": 0.2},
@@ -125,63 +137,34 @@ class JarvisBrain:
         data: dict[str, Any] = response.json()
         return str(data.get("message", {}).get("content", "")).strip()
 
-    def _ask_claude(self, messages: list[dict[str, str]]) -> str:
-        client = self._claude_client()
-        if client is None:
-            raise RuntimeError("Claude no está configurado.")
-        user_messages = [m for m in messages if m["role"] != "system"]
-        response = client.messages.create(
-            model=self.config.claude_model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=user_messages,
-        )
-        texts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
-        return "\n".join(texts).strip()
-
-    @staticmethod
-    def _is_claude_credit_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return (
-            "credit balance is too low" in message
-            or "plans & billing" in message
-            or "payment_required" in message
-        )
-
     def ask(self, user_message: str) -> str:
         user_message = user_message.strip()
         if not user_message:
             return "No recibí ninguna orden."
 
         self.conversation.append({"role": "user", "content": user_message})
-        if len(self.conversation) > self.config.max_history_messages:
-            self.conversation = self.conversation[-self.config.max_history_messages :]
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *self.conversation]
+        self.conversation = self.conversation[-self.config.max_history_messages :]
 
         try:
-            if self.provider == "claude":
+            if self.provider == "gemini":
                 try:
-                    answer = self._ask_claude(messages)
+                    answer = self._ask_gemini()
                 except Exception as exc:
-                    if self.config.fallback_to_ollama and self.ollama_available():
-                        if self._is_claude_credit_error(exc):
-                            print("[BRAIN] Claude no tiene créditos; usando Ollama como respaldo para esta solicitud.")
-                            answer = self._ask_ollama(messages)
-                            answer = f"[Respaldo Ollama] {answer}"
-                        else:
-                            raise
+                    print(f"[BRAIN] Gemini no pudo responder: {exc}")
+                    if self.ollama_available():
+                        print("[BRAIN] Fallback automático: Ollama local.")
+                        answer = self._ask_ollama()
                     else:
-                        raise
+                        return "Gemini no pudo responder y Ollama tampoco está disponible."
             else:
                 if not self.ollama_available():
-                    return "Ollama no está disponible. Inícialo o cambia el proveedor a Claude."
-                answer = self._ask_ollama(messages)
+                    return "Ollama no está disponible. Inícialo o cambia el proveedor a Gemini."
+                answer = self._ask_ollama()
 
             if not answer:
                 answer = "El proveedor no devolvió una respuesta válida."
             self.conversation.append({"role": "assistant", "content": answer})
-            if len(self.conversation) > self.config.max_history_messages:
-                self.conversation = self.conversation[-self.config.max_history_messages :]
+            self.conversation = self.conversation[-self.config.max_history_messages :]
             return answer
         except requests.Timeout:
             return "La respuesta de Ollama tardó demasiado."
@@ -190,6 +173,4 @@ class JarvisBrain:
             return "Se produjo un error al comunicarme con Ollama."
         except Exception as exc:
             print(f"[BRAIN] Error: {exc}")
-            if self.provider == "claude" and self._is_claude_credit_error(exc):
-                return "Claude está configurado, pero la cuenta no tiene créditos para la API. Ollama puede usarse como respaldo."
             return "Se produjo un error al procesar la solicitud."
