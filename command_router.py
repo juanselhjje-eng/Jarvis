@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shutil
 import subprocess
 import urllib.parse
 import webbrowser
@@ -14,11 +15,7 @@ from memory import LocalMemory
 
 
 class CommandRouter:
-    """Herramientas deterministas del único agente JARVIS.
-
-    No usa otro modelo. Detecta intenciones simples y ejecuta herramientas locales.
-    Las tareas complejas quedan para JarvisBrain y las integraciones especializadas.
-    """
+    """Herramientas deterministas del único agente JARVIS."""
 
     def __init__(self) -> None:
         self.memory = LocalMemory()
@@ -75,8 +72,13 @@ class CommandRouter:
     @staticmethod
     def _is_system_request(text: str) -> bool:
         return text in {
-            "estado del sistema", "estado sistema", "cómo está el sistema", "como esta el sistema",
-            "revisa el sistema", "revisa mi pc", "revisa mi computadora",
+            "estado del sistema",
+            "estado sistema",
+            "cómo está el sistema",
+            "como esta el sistema",
+            "revisa el sistema",
+            "revisa mi pc",
+            "revisa mi computadora",
         }
 
     @staticmethod
@@ -86,15 +88,19 @@ class CommandRouter:
             return None
 
         if "teams" in lower:
-            platform_name = "teams"
+            platform_name = "Teams"
             url = "https://teams.microsoft.com/"
         elif "gmail" in lower or "correo" in lower or "email" in lower:
-            platform_name = "gmail"
+            platform_name = "Gmail"
             url = "https://mail.google.com/"
         else:
             return None
 
-        match = re.search(r"\b(?:a|para)\s+([^,.:]+?)(?:\s+(?:y|dile|dile que|con el mensaje|que diga)\b|,|$)", text, flags=re.IGNORECASE)
+        match = re.search(
+            r"\b(?:a|para)\s+([^,.:]+?)(?:\s+(?:y|dile|dile que|con el mensaje|que diga)\b|,|$)",
+            text,
+            flags=re.IGNORECASE,
+        )
         person = match.group(1).strip() if match else "el contacto"
         body_match = re.search(r"\b(?:dile|escríbele|escribele|mensaje)\s+(?:que\s+)?(.+)$", text, flags=re.IGNORECASE)
         body = body_match.group(1).strip() if body_match else ""
@@ -102,8 +108,13 @@ class CommandRouter:
         webbrowser.open(url, new=2)
         detail = f" He identificado a {person}."
         if body:
-            detail += " El mensaje está preparado conceptualmente, pero el envío requiere confirmación."
-        return {"communication": platform_name, "person": person, "body": body, "message": f"Abrí {platform_name}.{detail}"}
+            detail += " El mensaje queda pendiente de confirmación antes de enviarlo."
+        return {
+            "communication": platform_name.lower(),
+            "person": person,
+            "body": body,
+            "message": f"Abrí {platform_name}.{detail}",
+        }
 
     @staticmethod
     def _search_intent(text: str) -> str | None:
@@ -128,12 +139,23 @@ class CommandRouter:
 
     @staticmethod
     def _remember_intent(text: str) -> str | None:
-        match = re.match(r"^(?:recuerda|recordar|acuérdate de|acuerdate de|guarda|guardar|anota|anotar)\s+(.+)$", text, flags=re.IGNORECASE)
+        match = re.match(
+            r"^(?:recuerda|recordar|acuérdate de|acuerdate de|guarda|guardar|anota|anotar)\s+(.+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
         return match.group(1).strip() if match else None
 
     @staticmethod
     def _is_memory_request(text: str) -> bool:
-        return text in {"qué recuerdas", "que recuerdas", "qué tienes en memoria", "que tienes en memoria", "qué recuerdas de mí", "que recuerdas de mi"}
+        return text in {
+            "qué recuerdas",
+            "que recuerdas",
+            "qué tienes en memoria",
+            "que tienes en memoria",
+            "qué recuerdas de mí",
+            "que recuerdas de mi",
+        }
 
     @staticmethod
     def system_status() -> str:
@@ -171,8 +193,11 @@ class CommandRouter:
                 os.startfile(str(path))  # type: ignore[attr-defined]
                 return f"Abriendo {path}."
 
-            # Solo para órdenes explícitas de ejecución. No se presenta como una acción ya verificada.
-            subprocess.Popen(target, shell=True)
-            return f"Ejecutando {target}."
-        except Exception as exc:
+            executable = shutil.which(target)
+            if executable:
+                subprocess.Popen([executable], shell=False)
+                return f"Ejecutando {target}."
+
+            return f"No encontré una aplicación o ruta válida llamada {target}."
+        except OSError as exc:
             return f"No pude abrir {target}: {exc}"
