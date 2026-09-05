@@ -12,13 +12,13 @@ from faster_whisper import WhisperModel
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover
+except ImportError:
     load_dotenv = None
 
 try:
     from elevenlabs import VoiceSettings
     from elevenlabs.client import ElevenLabs
-except ImportError:  # pragma: no cover
+except ImportError:
     ElevenLabs = None
     VoiceSettings = None
 
@@ -30,15 +30,11 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu").strip()
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es").strip()
 SAMPLE_RATE = 16000
-WAKE_WORDS = tuple(
-    word.strip().lower()
-    for word in os.getenv("JARVIS_WAKE_WORDS", "jarvis,viernes").split(",")
-    if word.strip()
-)
+WAKE_WORDS = tuple(word.strip().lower() for word in os.getenv("JARVIS_WAKE_WORDS", "jarvis,viernes").split(",") if word.strip())
 
 TTS_PROVIDER = os.getenv("JARVIS_TTS", "elevenlabs").strip().lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "W5JElH3dK1UYYAiHH7uh").strip()
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2").strip()
 ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "pcm_22050").strip()
 VOICE_RATE = int(os.getenv("LOCAL_VOICE_RATE", "175"))
@@ -53,7 +49,12 @@ class VoiceEngine:
         self.elevenlabs = None
         self.whisper: Optional[WhisperModel] = None
         self._tts_lock = threading.Lock()
+        self._speaking = threading.Event()
         self._load_tts()
+
+    @property
+    def is_speaking(self) -> bool:
+        return self._speaking.is_set()
 
     def _load_tts(self) -> None:
         if TTS_PROVIDER == "elevenlabs":
@@ -68,7 +69,6 @@ class VoiceEngine:
                     return
                 except Exception as exc:
                     print(f"[VOICE] No se pudo iniciar ElevenLabs: {exc}")
-
         self._load_pyttsx3()
 
     def _load_pyttsx3(self) -> None:
@@ -89,29 +89,15 @@ class VoiceEngine:
     def _speak_elevenlabs(self, text: str) -> bool:
         if self.elevenlabs is None:
             return False
-
         try:
-            kwargs = {
-                "text": text,
-                "voice_id": ELEVENLABS_VOICE_ID,
-                "model_id": ELEVENLABS_MODEL,
-                "output_format": ELEVENLABS_OUTPUT_FORMAT,
-            }
+            kwargs = {"text": text, "voice_id": ELEVENLABS_VOICE_ID, "model_id": ELEVENLABS_MODEL, "output_format": ELEVENLABS_OUTPUT_FORMAT}
             if VoiceSettings is not None:
-                kwargs["voice_settings"] = VoiceSettings(
-                    stability=0.55,
-                    similarity_boost=0.85,
-                    style=0.15,
-                    use_speaker_boost=True,
-                    speed=1.0,
-                )
-
+                kwargs["voice_settings"] = VoiceSettings(stability=0.55, similarity_boost=0.85, style=0.15, use_speaker_boost=True, speed=1.0)
             audio = self.elevenlabs.text_to_speech.convert(**kwargs)
             audio_bytes = audio if isinstance(audio, bytes) else b"".join(chunk for chunk in audio if chunk)
             samples = np.frombuffer(audio_bytes, dtype=np.int16)
             if samples.size == 0:
                 return False
-
             sample_rate = {"pcm_22050": 22050, "pcm_16000": 16000}.get(ELEVENLABS_OUTPUT_FORMAT, 22050)
             sd.play(samples, samplerate=sample_rate, blocking=True)
             return True
@@ -123,27 +109,24 @@ class VoiceEngine:
         text = text.strip()
         if not text:
             return
-
         with self._tts_lock:
-            if TTS_PROVIDER == "elevenlabs" and self._speak_elevenlabs(text):
-                return
-
-            if self.tts is None:
-                return
+            self._speaking.set()
             try:
+                if TTS_PROVIDER == "elevenlabs" and self._speak_elevenlabs(text):
+                    return
+                if self.tts is None:
+                    return
                 self.tts.say(text)
                 self.tts.runAndWait()
             except Exception as exc:
                 print(f"[VOICE] Error TTS local: {exc}")
+            finally:
+                self._speaking.clear()
 
     def load_whisper(self) -> None:
         if self.whisper is None:
             print(f"[VOICE] Cargando faster-whisper ({WHISPER_MODEL})...")
-            self.whisper = WhisperModel(
-                WHISPER_MODEL,
-                device=WHISPER_DEVICE,
-                compute_type=WHISPER_COMPUTE_TYPE,
-            )
+            self.whisper = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
             print("[VOICE] Whisper listo.")
 
     def record(self, seconds: float = 7.0) -> np.ndarray:
@@ -155,13 +138,7 @@ class VoiceEngine:
 
     def transcribe(self, audio: np.ndarray) -> str:
         self.load_whisper()
-        segments, _ = self.whisper.transcribe(
-            audio,
-            language=WHISPER_LANGUAGE,
-            beam_size=5,
-            vad_filter=True,
-            condition_on_previous_text=False,
-        )
+        segments, _ = self.whisper.transcribe(audio, language=WHISPER_LANGUAGE, beam_size=5, vad_filter=True, condition_on_previous_text=False)
         return " ".join(segment.text.strip() for segment in segments).strip()
 
     def listen(self, seconds: float = 7.0) -> str:
@@ -178,6 +155,9 @@ class VoiceEngine:
         return re.sub(r"\s+", " ", result).strip()
 
     def listen_for_command(self, seconds: float = 7.0) -> Optional[str]:
+        while self.is_speaking:
+            if not self._speaking.wait(timeout=0.1):
+                break
         text = self.listen(seconds)
         print(f"[VOICE] Reconocido: {text}")
         if not text or not self.has_wake_word(text):
