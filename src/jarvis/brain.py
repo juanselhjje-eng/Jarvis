@@ -40,7 +40,7 @@ REGLAS
 
 @dataclass
 class BrainConfig:
-    # Claude is the default provider. Ollama remains available as an optional local provider.
+    # Claude es el proveedor principal. Ollama puede actuar como respaldo por solicitud.
     provider: str = os.getenv("JARVIS_PROVIDER", "claude").strip().lower()
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2")
@@ -48,6 +48,9 @@ class BrainConfig:
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
     ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
     max_history_messages: int = int(os.getenv("JARVIS_MAX_HISTORY_MESSAGES", "12"))
+    fallback_to_ollama: bool = os.getenv("JARVIS_CLAUDE_FALLBACK_OLLAMA", "true").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
 
 class JarvisBrain:
@@ -86,7 +89,9 @@ class JarvisBrain:
 
     def is_available(self) -> bool:
         if self.provider == "claude":
-            return self.claude_available()
+            return self.claude_available() or (
+                self.config.fallback_to_ollama and self.ollama_available()
+            )
         return self.ollama_available()
 
     def set_provider(self, provider: str) -> str:
@@ -134,6 +139,15 @@ class JarvisBrain:
         texts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
         return "\n".join(texts).strip()
 
+    @staticmethod
+    def _is_claude_credit_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            "credit balance is too low" in message
+            or "plans & billing" in message
+            or "payment_required" in message
+        )
+
     def ask(self, user_message: str) -> str:
         user_message = user_message.strip()
         if not user_message:
@@ -146,7 +160,18 @@ class JarvisBrain:
 
         try:
             if self.provider == "claude":
-                answer = self._ask_claude(messages)
+                try:
+                    answer = self._ask_claude(messages)
+                except Exception as exc:
+                    if self.config.fallback_to_ollama and self.ollama_available():
+                        if self._is_claude_credit_error(exc):
+                            print("[BRAIN] Claude no tiene créditos; usando Ollama como respaldo para esta solicitud.")
+                            answer = self._ask_ollama(messages)
+                            answer = f"[Respaldo Ollama] {answer}"
+                        else:
+                            raise
+                    else:
+                        raise
             else:
                 if not self.ollama_available():
                     return "Ollama no está disponible. Inícialo o cambia el proveedor a Claude."
@@ -165,4 +190,6 @@ class JarvisBrain:
             return "Se produjo un error al comunicarme con Ollama."
         except Exception as exc:
             print(f"[BRAIN] Error: {exc}")
+            if self.provider == "claude" and self._is_claude_credit_error(exc):
+                return "Claude está configurado, pero la cuenta no tiene créditos para la API. Ollama puede usarse como respaldo."
             return "Se produjo un error al procesar la solicitud."
