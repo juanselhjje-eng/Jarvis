@@ -31,7 +31,7 @@ class CommandRouter:
         if not lower:
             return "Dime qué necesitas."
 
-        # Las confirmaciones son deterministas: jamás pasan al modelo.
+        # Las confirmaciones de acciones externas son deterministas y nunca pasan al modelo.
         if self._message_pending:
             if self._is_confirmation(lower):
                 self._message_pending = False
@@ -118,8 +118,9 @@ class CommandRouter:
     def _is_confirmation(text: str) -> bool:
         normalized = re.sub(r"[^a-záéíóúüñ ]", "", text.lower()).strip()
         return normalized in {
-            "sí", "si", "sí envíalo", "si envialo", "sí envía", "si envia",
-            "envíalo", "envialo", "envía", "envia", "hazlo", "confirmo",
+            "sí", "si", "si envialo", "sí envíalo", "sí envía", "si envia",
+            "envíalo", "envialo", "envialo ya", "ennvialo", "envía", "envia",
+            "mándalo", "mandalo", "mándale", "mandale", "hazlo", "confirmo",
             "confirmar", "dale", "adelante", "procede", "proceder", "sí hazlo", "si hazlo",
         }
 
@@ -133,11 +134,15 @@ class CommandRouter:
         if "teams" not in lower:
             return None
 
-        # Teams sin calificativo = personal. Solo estas palabras seleccionan educativo.
+        # Regla del proyecto: Teams sin calificativo = personal.
+        # Solo "educativo/colegio/escuela/institucional" cambia a la cuenta educativa.
         educational = bool(re.search(r"\b(?:educativo|educativa|colegio|escuela|institucional)\b", lower))
         message_markers = r"(?:dile(?:\s+que)?|dile\s+esto|que\s+diga|escr[ií]bele|env[ií]ale|m[aá]ndale|manda(?:le)?|env[ií]a|escribirle|mandar)"
         has_message_action = bool(re.search(rf"\b{message_markers}\b", lower))
-        has_contact = bool(re.search(r"\b(?:a|para)\s+[^,;]+", text, re.IGNORECASE)) or bool(re.search(r"\b(?:contacto|persona|se llama)\s+[^,;]+", text, re.IGNORECASE))
+        has_contact = bool(
+            re.search(r"\b(?:a|para)\s+[^,;]+", text, re.IGNORECASE)
+            or re.search(r"\b(?:contacto|persona|se llama)\s+[^,;]+", text, re.IGNORECASE)
+        )
 
         if not has_message_action and not has_contact:
             return {"communication": "teams", "action": "open", "educational": str(educational)}
@@ -162,18 +167,21 @@ class CommandRouter:
 
     @staticmethod
     def _extract_contact_and_message(text: str) -> tuple[str, str]:
-        """Extrae contacto y mensaje de frases naturales sin tragarse la orden completa."""
+        """Extrae contacto y mensaje de órdenes naturales, tolerando errores comunes de voz."""
         cleaned = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
         cleaned = re.sub(r"\b(?:jarvis|viernes|microsoft teams|teams)\b", " ", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(
-            r"\b(?:personal|educativo|educativa|colegio|escuela|institucional|en google|en el google|por google|en chrome|en el navegador|desde google|desde chrome|navegador)\b",
+            r"\b(?:personal|educativo|educativa|colegio|escuela|institucional|en google|en el google|por google|del google|de google|en chrome|en el navegador|desde google|desde chrome|navegador)\b",
             " ", cleaned, flags=re.IGNORECASE,
         )
-        cleaned = re.sub(r"\b(?:entra|entrar|abre|abrir|mira|mirar|busca|buscar|ve|ir)\b", " ", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\b(?:a los que les he escrito|a los que les e escrito|a los que les escribí|a quien le escribí|mis chats|mis conversaciones)\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b(?:entra|entrar|abre|abrir|mira|mirar|busca|buscar|ve|ir|entra a)\b", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"\b(?:a los que les he escrito|a los que les e escrito|a los que les escribí|a los q(?:ue)? les he escrito|a los q(?:ue)? les e escrito|a quien le escribí|a quien le escribi|mis chats|mis conversaciones)\b",
+            " ", cleaned, flags=re.IGNORECASE,
+        )
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,:-")
 
-        # "... la que se llama Majo G y dile hola"
+        # "la que se llama Majo G y dile hola"
         named = re.search(
             r"\b(?:la|el)?\s*(?:que\s+)?se\s+llama\s+(.+?)(?=\s+(?:y\s+)?(?:dile|escr[ií]bele|env[ií]ale|m[aá]ndale)\b|$)",
             cleaned,
@@ -190,7 +198,7 @@ class CommandRouter:
             body = body_match.group(1).strip(" \"'") if body_match else ""
             return person, body
 
-        # "... a Majo G y dile hola"
+        # "a Majo G y dile hola"
         direct = re.search(
             r"\b(?:a|para)\s+(.+?)(?=\s+(?:y\s+)?(?:dile|escr[ií]bele|env[ií]ale|m[aá]ndale)\b|$)",
             cleaned,
@@ -205,7 +213,7 @@ class CommandRouter:
                 flags=re.IGNORECASE,
             )
             body = body_match.group(1).strip(" \"'") if body_match else ""
-            if person.lower() not in {"la", "el", "que", "los", "las"}:
+            if person.lower() not in {"la", "el", "que", "los", "las", "los q", "q"}:
                 return person, body
 
         contact = re.search(
