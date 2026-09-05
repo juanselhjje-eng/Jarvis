@@ -1,4 +1,0 @@
-"""Extensible JARVIS capability/plugin layer."""
-from .registry import CapabilityRegistry, capability_registry
-
-__all__ = ["CapabilityRegistry", "capability_registry"]

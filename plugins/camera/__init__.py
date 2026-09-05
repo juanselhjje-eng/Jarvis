@@ -1,1 +1,0 @@
-"""JARVIS Camera Link plugin."""

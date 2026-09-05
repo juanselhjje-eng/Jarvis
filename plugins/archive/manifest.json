@@ -1,8 +1,0 @@
-{
-  "id": "archive",
-  "name": "Archive",
-  "version": "1.0",
-  "description": "Inspección y extracción de archivos comprimidos.",
-  "module": "plugins.document_tools",
-  "safe_delete": false
-}

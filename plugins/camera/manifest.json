@@ -1,8 +1,0 @@
-{
-  "id": "camera",
-  "name": "Camera Link",
-  "version": "1.0",
-  "description": "Vista de cámara y capturas para sesiones de visión.",
-  "module": "plugins.camera.engine",
-  "safe_delete": false
-}
