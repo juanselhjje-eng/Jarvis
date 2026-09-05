@@ -16,17 +16,19 @@ except ImportError:  # pragma: no cover
     load_dotenv = None
 
 try:
+    from elevenlabs import VoiceSettings
     from elevenlabs.client import ElevenLabs
 except ImportError:  # pragma: no cover
     ElevenLabs = None
+    VoiceSettings = None
 
 if load_dotenv:
     load_dotenv()
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
-WHISPER_DEVICE = "cpu"
-WHISPER_COMPUTE_TYPE = "int8"
-WHISPER_LANGUAGE = "es"
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base").strip()
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu").strip()
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es").strip()
 SAMPLE_RATE = 16000
 WAKE_WORDS = tuple(
     word.strip().lower()
@@ -38,13 +40,13 @@ TTS_PROVIDER = os.getenv("JARVIS_TTS", "elevenlabs").strip().lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2").strip()
-ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "pcm_44100").strip()
-VOICE_RATE = 175
-VOICE_VOLUME = 1.0
+ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "pcm_22050").strip()
+VOICE_RATE = int(os.getenv("LOCAL_VOICE_RATE", "175"))
+VOICE_VOLUME = float(os.getenv("LOCAL_VOICE_VOLUME", "1.0"))
 
 
 class VoiceEngine:
-    """Entrada por voz local y salida TTS con ElevenLabs o pyttsx3 de respaldo."""
+    """Entrada de voz local y salida TTS con ElevenLabs o pyttsx3 de respaldo."""
 
     def __init__(self) -> None:
         self.tts = None
@@ -56,7 +58,7 @@ class VoiceEngine:
     def _load_tts(self) -> None:
         if TTS_PROVIDER == "elevenlabs":
             if ElevenLabs is None:
-                print("[VOICE] Falta el paquete 'elevenlabs'. Se usará pyttsx3.")
+                print("[VOICE] Falta instalar 'elevenlabs'. Se usará pyttsx3.")
             elif not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
                 print("[VOICE] ElevenLabs no está configurado. Se usará pyttsx3.")
             else:
@@ -77,7 +79,7 @@ class VoiceEngine:
             voices = self.tts.getProperty("voices") or []
             for voice in voices:
                 data = f"{voice.id} {voice.name}".lower()
-                if "spanish" in data or "es_" in data or "español" in data or "es-" in data:
+                if any(marker in data for marker in ("spanish", "es_", "español", "es-")):
                     self.tts.setProperty("voice", voice.id)
                     break
             print("[VOICE] TTS local de respaldo listo.")
@@ -89,23 +91,36 @@ class VoiceEngine:
             return False
 
         try:
-            audio = self.elevenlabs.text_to_speech.convert(
-                text=text,
-                voice_id=ELEVENLABS_VOICE_ID,
-                model_id=ELEVENLABS_MODEL,
-                output_format=ELEVENLABS_OUTPUT_FORMAT,
-            )
-            audio_bytes = b"".join(audio) if not isinstance(audio, bytes) else audio
+            kwargs = {
+                "text": text,
+                "voice_id": ELEVENLABS_VOICE_ID,
+                "model_id": ELEVENLABS_MODEL,
+                "output_format": ELEVENLABS_OUTPUT_FORMAT,
+            }
+            if VoiceSettings is not None:
+                kwargs["voice_settings"] = VoiceSettings(
+                    stability=0.55,
+                    similarity_boost=0.85,
+                    style=0.15,
+                    use_speaker_boost=True,
+                    speed=1.0,
+                )
+
+            audio = self.elevenlabs.text_to_speech.convert(**kwargs)
+            audio_bytes = audio if isinstance(audio, bytes) else b"".join(chunk for chunk in audio if chunk)
             samples = np.frombuffer(audio_bytes, dtype=np.int16)
             if samples.size == 0:
                 return False
-            sd.play(samples, samplerate=44100, blocking=True)
+
+            sample_rate = {"pcm_22050": 22050, "pcm_16000": 16000}.get(ELEVENLABS_OUTPUT_FORMAT, 22050)
+            sd.play(samples, samplerate=sample_rate, blocking=True)
             return True
         except Exception as exc:
             print(f"[VOICE] ElevenLabs falló: {exc}")
             return False
 
     def speak(self, text: str) -> None:
+        text = text.strip()
         if not text:
             return
 
