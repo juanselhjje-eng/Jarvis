@@ -22,6 +22,28 @@ Respuesta + voz
 
 Ollama y Claude son **proveedores del mismo cerebro**, no agentes diferentes.
 
+## Estructura
+
+```text
+Jarvis/
+├── src/jarvis/          # Código principal
+│   ├── main.py
+│   ├── brain.py
+│   ├── command_router.py
+│   ├── voice_engine.py
+│   ├── hud.py
+│   └── memory.py
+├── data/                # Datos locales generados por JARVIS
+├── scripts/             # Lanzadores y utilidades
+├── .github/             # CI de GitHub
+├── .env.example
+├── requirements.txt
+├── main.py              # Punto de entrada simple
+└── README.md
+```
+
+El código de ejecución vive dentro de `src/jarvis`. La raíz conserva únicamente los archivos de configuración, documentación y el lanzador principal para que el proyecto sea fácil de usar.
+
 ## Ejemplos de órdenes
 
 - `Jarvis, abre Google.`
@@ -55,8 +77,6 @@ ELEVENLABS_VOICE_ID=W5JElH3dK1UYYAiHH7uh
 ELEVENLABS_MODEL=eleven_multilingual_v2
 ELEVENLABS_OUTPUT_FORMAT=pcm_22050
 ```
-
-`pcm_22050` permite reproducir el audio directamente con `sounddevice` sin depender de un reproductor externo. ElevenLabs también ofrece otros formatos y modelos; la configuración se mantiene en `.env` para poder cambiarlos sin modificar el código.
 
 ## Ollama
 
@@ -95,18 +115,17 @@ Copia `.env.example` como `.env` y configura los proveedores que quieras usar.
 python main.py
 ```
 
-O ejecuta `START_JARVIS.bat`.
+También puedes ejecutar `scripts\\START_JARVIS.bat` desde la raíz del proyecto.
 
 ## Arquitectura
 
-- `main.py` — runtime principal.
-- `brain.py` — único cerebro y proveedores Ollama/Claude.
-- `command_router.py` — herramientas deterministas y reconocimiento de intenciones simples.
-- `voice_engine.py` — reconocimiento local y TTS de ElevenLabs con respaldo local.
-- `memory.py` — memoria persistente local.
-- `hud.py` — interfaz gráfica futurista basada en Tkinter.
-
-Se eliminó el antiguo stack de agentes/orquestadores para que el repositorio refleje la arquitectura actual y no mantenga código muerto o contradictorio.
+- `src/jarvis/main.py` — runtime principal.
+- `src/jarvis/brain.py` — único cerebro y proveedores Ollama/Claude.
+- `src/jarvis/command_router.py` — herramientas deterministas e intenciones simples.
+- `src/jarvis/voice_engine.py` — reconocimiento local y TTS de ElevenLabs con respaldo local.
+- `src/jarvis/memory.py` — memoria persistente local en `data/memory.json`.
+- `src/jarvis/hud.py` — interfaz gráfica futurista basada en Tkinter.
+- `main.py` — punto de entrada compatible y sencillo.
 
 ## Seguridad
 
