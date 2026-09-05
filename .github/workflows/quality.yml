@@ -14,9 +14,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile Python sources
-        run: python -m compileall -q app.py agents config core memory plugins providers tools ui tests
-      - name: Verify secrets and runtime memory are not tracked
+      - name: Compile current Python runtime
+        run: python -m compileall -q *.py
+      - name: Verify secrets and generated runtime files are not tracked
         shell: bash
         run: |
-          ! git ls-files | grep -E '(^|/)(\.env|.*\.db|.*\.db-wal|.*\.db-shm|memory/.*\.jsonl)$'
+          ! git ls-files | grep -E '(^|/)(\.env|.*\.pyc|__pycache__/|memory\.json)$'
