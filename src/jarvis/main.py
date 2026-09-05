@@ -26,15 +26,8 @@ class Jarvis:
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
-
-        self.hud = JarvisHUD(
-            brain=self.brain,
-            voice=self.voice,
-            process_command=self.process_command,
-            shutdown=self.shutdown,
-        )
+        self.hud = JarvisHUD(brain=self.brain, voice=self.voice, process_command=self.process_command, shutdown=self.shutdown)
         self.hud.add_message("SYSTEM", f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.")
-
         threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
         threading.Thread(target=self.voice.speak, args=("Sistemas principales iniciados. Te escucho.",), daemon=True).start()
         self.hud.run()
@@ -72,15 +65,13 @@ class Jarvis:
                     return
 
                 if tool_result.get("communication") == "teams":
-                    action = tool_result.get("action")
                     educational = tool_result.get("educational") == "True"
+                    action = tool_result.get("action")
                     if action == "open":
                         self.respond(self.tools.teams.open(educational))
                         return
                     if action == "open_contact":
-                        person = tool_result.get("person", "el contacto")
-                        result = self.tools.teams.prepare_message(person, "", educational=educational)
-                        self.respond(result)
+                        self.respond(self.tools.teams.open_contact(tool_result.get("person", ""), educational))
                         return
                     self.respond(str(tool_result.get("message", "Procesando Teams.")))
                     return
@@ -105,7 +96,6 @@ class Jarvis:
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True, name="jarvis-tts").start()
 
     def run_voice_loop(self) -> None:
-        """Modo manos libres: escucha continuamente y exige palabra de activación."""
         while self.running:
             try:
                 if self.voice.is_speaking:
