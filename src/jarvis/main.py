@@ -8,16 +8,18 @@ from .command_router import CommandRouter
 from .evidence import EvidenceBoard
 from .execution import ExecutionTracker, TaskState
 from .hud_command import JarvisHUD
+from .task_planner import TaskPlanner
 from .voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas, misión y verificación."""
+    """Runtime de JARVIS: un solo cerebro, herramientas, misión, planificación y verificación."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
         self.tools = CommandRouter()
+        self.planner = TaskPlanner()
         self.execution = ExecutionTracker()
         self.evidence = EvidenceBoard()
         self.voice = VoiceEngine()
@@ -40,7 +42,7 @@ class Jarvis:
             evidence=self.evidence,
             execution=self.execution,
         )
-        self.hud.add_message("SYSTEM", f"MISSION CONTROL ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, texto, memoria y herramientas activas.")
+        self.hud.add_message("SYSTEM", f"MISSION CONTROL ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, texto, memoria, planificación y herramientas activas.")
 
         self.hud.set_state("SPEAKING")
         self.voice.speak("Mission Control iniciado. Te escucho.")
@@ -74,6 +76,18 @@ class Jarvis:
             if investigation:
                 self.evidence.start(title=command, query=command)
                 self.evidence.update(self.evidence.latest(), status="RESEARCHING")
+
+            # Las tareas complejas obtienen primero un plan visible y verificable.
+            complex_task = len(command.split()) >= 10 or any(
+                marker in lowered for marker in ("paso a paso", "encárgate de", "encargate de", "haz todo", "busca y", "revisa y")
+            )
+            if complex_task:
+                plan = self.planner.plan(command)
+                plan_text = "PLAN DE MISIÓN\n" + plan.summary()
+                print(f"[PLAN]\n{plan_text}\n")
+                if self.hud:
+                    self.hud.add_message("PLAN", plan_text)
+                self.execution.set_state(TaskState.PLANNING)
 
             tool_result = self.tools.handle(command)
 
@@ -130,7 +144,7 @@ class Jarvis:
                 if investigation and self.evidence.latest():
                     status = "COLLECTING" if verified else "FAILED"
                     self.evidence.update(self.evidence.latest(), status=status, findings=[response])
-                self.execution.finish(response, verified=verified, success=verified)
+                self.execution.finish(response, verified=verified)
                 self.respond(response)
                 return
 
