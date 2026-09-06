@@ -5,41 +5,47 @@ import time
 
 from src.jarvis.brain import JarvisBrain
 from src.jarvis.command_router import CommandRouter
-from src.jarvis.hud import JarvisHUD
+from src.jarvis.copilot_panel import CopilotPanel
+from src.jarvis.hud_hrz import JarvisHRZHUD
 from src.jarvis.voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas y HUD funcional."""
+    """Runtime de JARVIS: un solo cerebro, herramientas, HUD y Copiloto."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
         self.tools = CommandRouter()
         self.voice = VoiceEngine()
-        self.hud: JarvisHUD | None = None
+        self.hud: JarvisHRZHUD | None = None
+        self.copilot: CopilotPanel | None = None
         self._command_lock = threading.Lock()
 
     def start(self) -> None:
         if not self.brain.is_available():
-            message = "El proveedor configurado no está disponible. Revisa Ollama o Claude."
+            message = "El proveedor configurado no está disponible. Revisa Gemini u Ollama."
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
 
-        self.hud = JarvisHUD(
+        self.hud = JarvisHRZHUD(
             brain=self.brain,
             voice=self.voice,
             process_command=self.process_command,
             shutdown=self.shutdown,
         )
+        self.copilot = CopilotPanel(self.hud.root, self.process_command)
+        self.hud.root.bind("<Control-Shift-j>", lambda _event: self.copilot.toggle())
+        self.hud.root.bind("<F2>", lambda _event: self.copilot.toggle())
+
         self.hud.add_message(
             "SYSTEM",
-            f"Sistemas iniciados. Cerebro: {self.brain.provider.upper()}. Entrada por texto y voz disponible.",
+            f"Mission Control iniciado. Cerebro: {self.brain.provider.upper()}. Copiloto: F2 / Ctrl+Shift+J.",
         )
         threading.Thread(
             target=self.voice.speak,
-            args=("Sistemas principales iniciados. Te escucho.",),
+            args=("Mission Control iniciado. Te escucho.",),
             daemon=True,
         ).start()
         self.hud.run()
@@ -89,6 +95,11 @@ class Jarvis:
         print(f"[JARVIS] {text}\n")
         if self.hud:
             self.hud.set_response(text)
+        if self.copilot:
+            try:
+                self.copilot.show_result(text)
+            except Exception:
+                pass
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True).start()
 
     def run_voice_loop(self) -> None:
