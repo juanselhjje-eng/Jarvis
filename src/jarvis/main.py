@@ -7,7 +7,7 @@ from .brain import JarvisBrain
 from .command_router import CommandRouter
 from .evidence import EvidenceBoard
 from .execution import ExecutionTracker, TaskState
-from .hud_command import JarvisHUD
+from .hud_hrz import JarvisHRZHUD
 from .task_planner import TaskPlanner
 from .voice_engine import VoiceEngine
 
@@ -23,7 +23,7 @@ class Jarvis:
         self.execution = ExecutionTracker()
         self.evidence = EvidenceBoard()
         self.voice = VoiceEngine()
-        self.hud: JarvisHUD | None = None
+        self.hud: JarvisHRZHUD | None = None
         self._command_lock = threading.Lock()
         self._voice_command_lock = threading.Lock()
 
@@ -34,7 +34,7 @@ class Jarvis:
             self.voice.speak(message)
             return
 
-        self.hud = JarvisHUD(
+        self.hud = JarvisHRZHUD(
             brain=self.brain,
             voice=self.voice,
             process_command=self.process_command,
@@ -42,13 +42,13 @@ class Jarvis:
             evidence=self.evidence,
             execution=self.execution,
         )
-        self.hud.add_message("SYSTEM", f"MISSION CONTROL ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, texto, memoria, planificación y herramientas activas.")
+        self.hud.add_message("SYSTEM", f"JARVIS-HRZ ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, memoria, planificación, tareas, recordatorios y control activos.")
 
-        self.hud.set_state("SPEAKING")
-        self.voice.speak("Mission Control iniciado. Te escucho.")
+        self.hud.set_state("HABLANDO")
+        self.voice.speak("JARVIS-HRZ iniciado. Te escucho.")
         if not self.running:
             return
-        self.hud.set_state("STANDBY")
+        self.hud.set_state("ESCUCHANDO")
         threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
         self.hud.run()
 
@@ -70,14 +70,13 @@ class Jarvis:
             self.execution.start(command)
             self.execution.set_state(TaskState.INTENT)
             if self.hud:
-                self.hud.set_state("ANALYZING")
+                self.hud.set_state("ANALIZANDO")
 
             investigation = lowered.startswith(("investiga ", "investiga:", "investigar "))
             if investigation:
                 self.evidence.start(title=command, query=command)
                 self.evidence.update(self.evidence.latest(), status="RESEARCHING")
 
-            # Las tareas complejas obtienen primero un plan visible y verificable.
             complex_task = len(command.split()) >= 10 or any(
                 marker in lowered for marker in ("paso a paso", "encárgate de", "encargate de", "haz todo", "busca y", "revisa y")
             )
@@ -150,7 +149,7 @@ class Jarvis:
 
             self.execution.set_state(TaskState.PLANNING)
             if self.hud:
-                self.hud.set_state("THINKING")
+                self.hud.set_state("PENSANDO")
             answer = self.brain.ask(command)
             self.execution.set_state(TaskState.VERIFYING)
             if investigation and self.evidence.latest():
@@ -174,23 +173,23 @@ class Jarvis:
                     time.sleep(0.25)
                     continue
                 if self.hud:
-                    self.hud.set_state("LISTENING")
+                    self.hud.set_state("ESCUCHANDO")
                 command = self.voice.listen_for_command(seconds=5)
                 if command and self.running:
                     if self.hud:
-                        self.hud.add_message("USER", command)
-                        self.hud.set_state("PROCESSING")
+                        self.hud.add_message("TÚ", command)
+                        self.hud.set_state("PROCESANDO")
                     self.process_command(command)
                 elif self.hud and self.running:
-                    self.hud.set_state("STANDBY")
+                    self.hud.set_state("ESCUCHANDO")
             except KeyboardInterrupt:
                 self.shutdown()
                 return
             except Exception as exc:
                 print(f"[VOICE] Error: {exc}")
                 if self.hud:
-                    self.hud.add_message("VOICE", f"Error de reconocimiento: {exc}")
-                    self.hud.set_state("STANDBY")
+                    self.hud.show_alert(f"Error de reconocimiento: {exc}", "#ed6375")
+                    self.hud.set_state("ESCUCHANDO")
                 time.sleep(1)
             finally:
                 self._voice_command_lock.release()
