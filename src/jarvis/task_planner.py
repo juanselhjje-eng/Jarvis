@@ -8,6 +8,7 @@ class TaskStep:
     number: int
     action: str
     status: str = "PENDING"
+    detail: str = ""
 
 
 @dataclass
@@ -19,44 +20,37 @@ class TaskPlan:
     def summary(self) -> str:
         lines = [f"Objetivo: {self.goal}"]
         for step in self.steps:
-            lines.append(f"{step.number}. [{step.status}] {step.action}")
+            suffix = f" — {step.detail}" if step.detail else ""
+            lines.append(f"{step.number}. [{step.status}] {step.action}{suffix}")
         if self.requires_confirmation:
             lines.append("Confirmación necesaria antes de una acción externa.")
         return "\n".join(lines)
 
+    def mark(self, number: int, status: str, detail: str = "") -> None:
+        for step in self.steps:
+            if step.number == number:
+                step.status = status
+                step.detail = detail
+                return
+
 
 class TaskPlanner:
-    """Planificador explícito. El plan se muestra antes de acciones externas."""
+    """Planificador explícito para tareas de varios pasos."""
 
     def plan(self, goal: str) -> TaskPlan:
         text = goal.strip()
         lower = text.lower()
-        steps: list[TaskStep] = []
-
         if any(word in lower for word in ("apartamento", "casa", "inmueble", "arriendo", "alquiler")):
             steps = [
-                TaskStep(1, "Abrir el navegador y buscar el inmueble con las condiciones indicadas."),
-                TaskStep(2, "Revisar resultados y descartar los que no cumplan las condiciones."),
-                TaskStep(3, "Abrir los candidatos restantes y comprobar los datos disponibles."),
-                TaskStep(4, "Preparar una solicitud o mensaje de contacto, sin enviarlo todavía."),
-                TaskStep(5, "Mostrar el mensaje y pedir confirmación antes de enviarlo o agendar una cita."),
+                "Abrir el navegador y buscar con las condiciones indicadas.",
+                "Revisar resultados y descartar los que no cumplan.",
+                "Abrir candidatos y comprobar sus datos.",
+                "Preparar contacto sin enviarlo.",
+                "Mostrarlo y pedir confirmación antes de enviar o agendar.",
             ]
-            return TaskPlan(text, steps, requires_confirmation=True)
-
+            return TaskPlan(text, [TaskStep(i + 1, a) for i, a in enumerate(steps)], True)
         if any(word in lower for word in ("busca", "investiga", "revisa", "compara")):
-            steps = [
-                TaskStep(1, "Interpretar el objetivo y separar los criterios."),
-                TaskStep(2, "Recopilar información relevante."),
-                TaskStep(3, "Descartar resultados que no cumplan los criterios."),
-                TaskStep(4, "Verificar los datos importantes."),
-                TaskStep(5, "Presentar el resultado y las siguientes acciones disponibles."),
-            ]
-            return TaskPlan(text, steps)
-
-        steps = [
-            TaskStep(1, "Interpretar la intención."),
-            TaskStep(2, "Elegir las herramientas disponibles y seguras."),
-            TaskStep(3, "Ejecutar una acción verificable cuando exista una herramienta compatible."),
-            TaskStep(4, "Comprobar el resultado y reportarlo."),
-        ]
-        return TaskPlan(text, steps)
+            steps = ["Interpretar criterios.", "Recopilar información.", "Filtrar resultados.", "Verificar datos.", "Presentar resultados."]
+            return TaskPlan(text, [TaskStep(i + 1, a) for i, a in enumerate(steps)])
+        steps = ["Interpretar intención.", "Elegir herramientas.", "Ejecutar acciones compatibles.", "Comprobar resultado."]
+        return TaskPlan(text, [TaskStep(i + 1, a) for i, a in enumerate(steps)])
