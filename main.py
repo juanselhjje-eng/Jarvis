@@ -29,13 +29,7 @@ class Jarvis:
             print(f"[ERROR] {message}")
             self.voice.speak(message)
             return
-
-        self.hud = JarvisHUDv2(
-            brain=self.brain,
-            voice=self.voice,
-            process_command=self.process_command,
-            shutdown=self.shutdown,
-        )
+        self.hud = JarvisHUDv2(self.brain, self.voice, self.process_command, self.shutdown)
         self.copilot = CopilotPanel(self.hud.root, self.process_command)
         self.hud.root.bind("<Control-Shift-j>", lambda _event: self.copilot.toggle())
         self.hud.root.bind("<F2>", lambda _event: self.copilot.toggle())
@@ -49,68 +43,51 @@ class Jarvis:
             return
         lowered = command.lower().strip()
         if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
-            self.shutdown()
-            return
+            self.shutdown(); return
         if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
-            self.brain.reset_conversation()
-            self.respond("Conversación limpiada.")
-            return
+            self.brain.reset_conversation(); self.respond("Conversación limpiada."); return
 
         with self._command_lock:
             print(f"[USER] {command}")
-            tool_result = self.tools.handle(command)
+            provider_match = re.search(r"\b(?:usa|usar|cambia a|cámbiate a|selecciona)\s+(?:el\s+)?(?:modelo\s+)?(gemini|ollama)\b", lowered)
+            if provider_match:
+                try:
+                    provider = self.brain.set_provider(provider_match.group(1))
+                    if self.hud: self.hud.notify(f"Proveedor cambiado: {provider.upper()}")
+                    self.respond(f"Entendido. Ahora usaré {provider}.")
+                except (ValueError, RuntimeError) as exc:
+                    self.respond(str(exc))
+                return
 
+            tool_result = self.tools.handle(command)
             if isinstance(tool_result, dict):
                 if tool_result.get("provider"):
-                    try:
-                        provider = self.brain.set_provider(str(tool_result["provider"]))
-                        if self.hud: self.hud.notify(f"Proveedor cambiado: {provider.upper()}")
-                        self.respond(f"Entendido. Ahora usaré {provider}.")
-                    except (ValueError, RuntimeError) as exc:
-                        self.respond(str(exc))
+                    try: self.respond(f"Entendido. Ahora usaré {self.brain.set_provider(str(tool_result['provider']))}.")
+                    except (ValueError, RuntimeError) as exc: self.respond(str(exc))
                     return
-
                 if tool_result.get("send_message") == "teams":
-                    result = self.tools.teams.send_draft()
-                    self.respond(result)
-                    return
-
+                    self.respond(self.tools.teams.send_draft()); return
                 if tool_result.get("communication"):
                     action = tool_result.get("action")
                     educational = str(tool_result.get("educational", "False")).lower() == "true"
-                    if action == "open":
-                        result = self.tools.teams.open(educational=educational)
-                        self.respond(result)
-                        return
-                    if action == "open_contact":
-                        result = self.tools.teams.open_contact(str(tool_result.get("person", "")), educational=educational)
-                        self.respond(result)
-                        return
-                    self.respond(str(tool_result.get("message", "Abrí la aplicación.")))
-                    return
-
+                    if action == "open": self.respond(self.tools.teams.open(educational=educational)); return
+                    if action == "open_contact": self.respond(self.tools.teams.open_contact(str(tool_result.get("person", "")), educational=educational)); return
+                    self.respond(str(tool_result.get("message", "Abrí la aplicación."))); return
             if isinstance(tool_result, str):
-                self.respond(tool_result)
-                return
+                self.respond(tool_result); return
 
-            # Fallback de aplicaciones: permite abrir cualquier app registrada en Inicio,
-            # pero solo cuando el nombre es texto simple, no un comando de shell.
             app_match = re.match(r"^(?:abre|abrir|inicia|iniciar|lanza|lanzar)\s+(?:la\s+|el\s+)?(?:aplicación\s+|app\s+)?([A-Za-zÁÉÍÓÚáéíóúÑñ0-9 ._-]{2,60})$", command)
             if app_match:
                 target = app_match.group(1).strip()
-                try:
-                    self.respond(self.tools.system.open_application(target))
-                except Exception as exc:
-                    self.respond(f"No pude abrir {target}: {exc}")
+                try: self.respond(self.tools.system.open_application(target))
+                except Exception as exc: self.respond(f"No pude abrir {target}: {exc}")
                 return
 
-            answer = self.brain.ask(command)
-            self.respond(answer)
+            self.respond(self.brain.ask(command))
 
     def respond(self, text: str) -> None:
         print(f"[JARVIS] {text}\n")
-        if self.hud:
-            self.hud.set_response(text)
+        if self.hud: self.hud.set_response(text)
         if self.copilot:
             try: self.copilot.show_result(text)
             except Exception: pass
@@ -121,11 +98,9 @@ class Jarvis:
             try:
                 command = self.voice.listen_for_command(seconds=7)
                 if command: self.process_command(command)
-            except KeyboardInterrupt:
-                self.shutdown()
+            except KeyboardInterrupt: self.shutdown()
             except Exception as exc:
-                print(f"[VOICE] Error: {exc}")
-                time.sleep(1)
+                print(f"[VOICE] Error: {exc}"); time.sleep(1)
 
     def shutdown(self) -> None:
         if not self.running: return
@@ -138,11 +113,9 @@ class Jarvis:
 def main() -> int:
     jarvis = Jarvis()
     try:
-        jarvis.start()
-        return 0
+        jarvis.start(); return 0
     except KeyboardInterrupt:
-        jarvis.shutdown()
-        return 0
+        jarvis.shutdown(); return 0
     except Exception as exc:
         print(f"[FATAL] {exc}")
         try: jarvis.voice.speak("Se produjo un error crítico.")
