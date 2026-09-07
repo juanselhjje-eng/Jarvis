@@ -11,6 +11,7 @@ from src.jarvis.hud_v3 import JarvisHUDv3
 from src.jarvis.voice_engine import VoiceEngine
 from src.jarvis.agent_orchestrator import AgentOrchestrator
 from src.jarvis.reasoning_layer import ReasoningLayer
+from src.jarvis.agent_protocol import AgentProtocol
 
 
 class Jarvis:
@@ -25,6 +26,7 @@ class Jarvis:
         self.copilot: CopilotPanel | None = None
         self.reasoning = ReasoningLayer(self.brain)
         self.agent = AgentOrchestrator(self.brain, self.tools, self.tools.computer, self._agent_step)
+        self.protocol = AgentProtocol()
         self._command_lock = threading.Lock()
 
     def start(self) -> None:
@@ -44,8 +46,11 @@ class Jarvis:
     def _agent_step(self, step) -> None:
         print(f"[MISSION] {step.number}: {step.status} — {step.action} {step.result}")
         if self.hud:
-            try: self.hud.set_state("PENSANDO" if step.status == "PENDING" else step.status)
-            except Exception: pass
+            try:
+                state = "PENSANDO" if step.status == "PENDING" else step.status
+                self.hud.set_state(state)
+            except Exception:
+                pass
 
     @staticmethod
     def _is_planning_request(command: str) -> bool:
@@ -56,72 +61,123 @@ class Jarvis:
 
     def process_command(self, command: str) -> None:
         command = command.strip()
-        if not command or not self.running: return
+        if not command or not self.running:
+            return
         lowered = command.lower().strip()
-        if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}: self.shutdown(); return
-        if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}: self.brain.reset_conversation(); self.respond("Conversación limpiada."); return
+        if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
+            self.shutdown()
+            return
+        if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
+            self.brain.reset_conversation()
+            self.respond("Conversación limpiada.")
+            return
         with self._command_lock:
             print(f"[USER] {command}")
             effort_match = re.search(r"\b(?:esfuerzo|nivel de razonamiento|nivel cognitivo)\s+(bajo|medio|alto|low|medium|high)\b", lowered)
             if effort_match:
-                value = {"bajo": "low", "medio": "medium", "alto": "high"}.get(effort_match.group(1), effort_match.group(1)); self.reasoning.set_effort(value); self.agent.set_effort(value); self.respond(f"Esfuerzo cognitivo configurado en {value}."); return
+                value = {"bajo": "low", "medio": "medium", "alto": "high"}.get(effort_match.group(1), effort_match.group(1))
+                self.reasoning.set_effort(value)
+                self.agent.set_effort(value)
+                self.respond(f"Esfuerzo cognitivo configurado en {value}.")
+                return
             provider_match = re.search(r"\b(?:usa|usar|cambia a|cámbiate a|selecciona)\s+(?:el\s+)?(?:modelo\s+)?(gemini|ollama)\b", lowered)
             if provider_match:
                 try:
-                    provider = self.brain.set_provider(provider_match.group(1)); self.hud.notify(f"Proveedor cambiado: {provider.upper()}") if self.hud else None; self.respond(f"Entendido. Ahora usaré {provider}.")
-                except (ValueError, RuntimeError) as exc: self.respond(str(exc))
+                    provider = self.brain.set_provider(provider_match.group(1))
+                    if self.hud:
+                        self.hud.notify(f"Proveedor cambiado: {provider.upper()}")
+                    self.respond(f"Entendido. Ahora usaré {provider}.")
+                except (ValueError, RuntimeError) as exc:
+                    self.respond(str(exc))
                 return
             if lowered in {"mira la pantalla", "observa la pantalla", "captura la pantalla", "analiza la pantalla"}:
-                self.respond(str(self.tools.handle(command))); return
+                self.respond(str(self.tools.handle(command)))
+                return
             if self._is_planning_request(command):
-                plan = self.agent.make_plan(command); self.agent.execute_visible(plan); self.respond(plan.summary()); return
+                plan = self.agent.make_plan(command)
+                self.agent.execute_visible(plan)
+                self.respond(plan.summary())
+                return
             tool_result = self.tools.handle(command)
             if isinstance(tool_result, dict):
                 if tool_result.get("provider"):
-                    try: self.respond(f"Entendido. Ahora usaré {self.brain.set_provider(str(tool_result['provider']))}.")
-                    except (ValueError, RuntimeError) as exc: self.respond(str(exc))
+                    try:
+                        self.respond(f"Entendido. Ahora usaré {self.brain.set_provider(str(tool_result['provider']))}.")
+                    except (ValueError, RuntimeError) as exc:
+                        self.respond(str(exc))
                     return
-                if tool_result.get("send_message") == "teams": self.respond(self.tools.teams.send_draft()); return
+                if tool_result.get("send_message") == "teams":
+                    self.respond(self.tools.teams.send_draft())
+                    return
                 if tool_result.get("communication"):
-                    action = tool_result.get("action"); educational = str(tool_result.get("educational", "False")).lower() == "true"
-                    if action == "open": self.respond(self.tools.teams.open(educational=educational)); return
-                    if action == "open_contact": self.respond(self.tools.teams.open_contact(str(tool_result.get("person", "")), educational=educational)); return
-                    self.respond(str(tool_result.get("message", "Abrí la aplicación."))); return
-            if isinstance(tool_result, str): self.respond(tool_result); return
-            self.respond(self.reasoning.answer(command))
+                    action = tool_result.get("action")
+                    educational = str(tool_result.get("educational", "False")).lower() == "true"
+                    if action == "open":
+                        self.respond(self.tools.teams.open(educational=educational))
+                        return
+                    if action == "open_contact":
+                        self.respond(self.tools.teams.open_contact(str(tool_result.get("person", "")), educational=educational))
+                        return
+                    self.respond(str(tool_result.get("message", "Abrí la aplicación.")))
+                    return
+            if isinstance(tool_result, str):
+                self.respond(tool_result)
+                return
+            result = self.reasoning.answer(command)
+            if self.reasoning.effort == "high":
+                verification = self.agent.verify_result(command, result)
+                if verification != "Resultado verificado.":
+                    result = result + "\n\n[VERIFICACIÓN] " + verification
+            self.respond(result)
 
     def respond(self, text: str) -> None:
         print(f"[JARVIS] {text}\n")
-        if self.hud: self.hud.set_response(text)
+        if self.hud:
+            self.hud.set_response(text)
         if self.copilot:
-            try: self.copilot.show_result(text)
-            except Exception: pass
+            try:
+                self.copilot.show_result(text)
+            except Exception:
+                pass
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True).start()
 
     def run_voice_loop(self) -> None:
         while self.running:
             try:
                 command = self.voice.listen_for_command(seconds=7)
-                if command: self.process_command(command)
-            except KeyboardInterrupt: self.shutdown()
-            except Exception as exc: print(f"[VOICE] Error: {exc}"); time.sleep(1)
+                if command:
+                    self.process_command(command)
+            except KeyboardInterrupt:
+                self.shutdown()
+            except Exception as exc:
+                print(f"[VOICE] Error: {exc}")
+                time.sleep(1)
 
     def shutdown(self) -> None:
-        if not self.running: return
+        if not self.running:
+            return
         self.running = False
-        try: self.voice.speak("Sistemas apagados.")
-        finally: self.voice.shutdown()
+        try:
+            self.voice.speak("Sistemas apagados.")
+        finally:
+            self.voice.shutdown()
         print("[SYSTEM] JARVIS detenido.")
 
 
 def main() -> int:
     jarvis = Jarvis()
-    try: jarvis.start(); return 0
-    except KeyboardInterrupt: jarvis.shutdown(); return 0
+    try:
+        jarvis.start()
+        return 0
+    except KeyboardInterrupt:
+        jarvis.shutdown()
+        return 0
     except Exception as exc:
         print(f"[FATAL] {exc}")
-        try: jarvis.voice.speak("Se produjo un error crítico.")
-        except Exception: pass
+        try:
+            jarvis.voice.speak("Se produjo un error crítico.")
+        except Exception:
+            pass
         return 1
 
 
