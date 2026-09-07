@@ -1,24 +1,25 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 
 from src.jarvis.brain import JarvisBrain
 from src.jarvis.command_router import CommandRouter
 from src.jarvis.copilot_panel import CopilotPanel
-from src.jarvis.hud_hrz import JarvisHRZHUD
+from src.jarvis.hud_v2 import JarvisHUDv2
 from src.jarvis.voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas, HUD y Copiloto."""
+    """Runtime de JARVIS: un solo cerebro, herramientas y Mission Control."""
 
     def __init__(self) -> None:
         self.running = True
         self.brain = JarvisBrain()
         self.tools = CommandRouter()
         self.voice = VoiceEngine()
-        self.hud: JarvisHRZHUD | None = None
+        self.hud: JarvisHUDv2 | None = None
         self.copilot: CopilotPanel | None = None
         self._command_lock = threading.Lock()
 
@@ -29,7 +30,7 @@ class Jarvis:
             self.voice.speak(message)
             return
 
-        self.hud = JarvisHRZHUD(
+        self.hud = JarvisHUDv2(
             brain=self.brain,
             voice=self.voice,
             process_command=self.process_command,
@@ -38,28 +39,18 @@ class Jarvis:
         self.copilot = CopilotPanel(self.hud.root, self.process_command)
         self.hud.root.bind("<Control-Shift-j>", lambda _event: self.copilot.toggle())
         self.hud.root.bind("<F2>", lambda _event: self.copilot.toggle())
-
-        self.hud.add_message(
-            "SYSTEM",
-            f"Mission Control iniciado. Cerebro: {self.brain.provider.upper()}. Copiloto: F2 / Ctrl+Shift+J.",
-        )
-        threading.Thread(
-            target=self.voice.speak,
-            args=("Mission Control iniciado. Te escucho.",),
-            daemon=True,
-        ).start()
+        self.hud.add_message("SYSTEM", f"Mission Control iniciado. Cerebro: {self.brain.provider.upper()}.")
+        threading.Thread(target=self.voice.speak, args=("Mission Control iniciado. Te escucho.",), daemon=True).start()
         self.hud.run()
 
     def process_command(self, command: str) -> None:
         command = command.strip()
         if not command or not self.running:
             return
-
         lowered = command.lower().strip()
         if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
-
         if lowered in {"limpiar conversación", "limpia la conversación", "borra la conversación", "olvida esta conversación"}:
             self.brain.reset_conversation()
             self.respond("Conversación limpiada.")
@@ -73,19 +64,44 @@ class Jarvis:
                 if tool_result.get("provider"):
                     try:
                         provider = self.brain.set_provider(str(tool_result["provider"]))
+                        if self.hud: self.hud.notify(f"Proveedor cambiado: {provider.upper()}")
                         self.respond(f"Entendido. Ahora usaré {provider}.")
                     except (ValueError, RuntimeError) as exc:
                         self.respond(str(exc))
                     return
 
+                if tool_result.get("send_message") == "teams":
+                    result = self.tools.teams.send_draft()
+                    self.respond(result)
+                    return
+
                 if tool_result.get("communication"):
-                    message = str(tool_result.get("message", "Abrí la aplicación."))
-                    self.respond(message)
-                    print("[ACTION] No envío mensajes automáticamente: el envío necesita confirmación explícita.")
+                    action = tool_result.get("action")
+                    educational = str(tool_result.get("educational", "False")).lower() == "true"
+                    if action == "open":
+                        result = self.tools.teams.open(educational=educational)
+                        self.respond(result)
+                        return
+                    if action == "open_contact":
+                        result = self.tools.teams.open_contact(str(tool_result.get("person", "")), educational=educational)
+                        self.respond(result)
+                        return
+                    self.respond(str(tool_result.get("message", "Abrí la aplicación.")))
                     return
 
             if isinstance(tool_result, str):
                 self.respond(tool_result)
+                return
+
+            # Fallback de aplicaciones: permite abrir cualquier app registrada en Inicio,
+            # pero solo cuando el nombre es texto simple, no un comando de shell.
+            app_match = re.match(r"^(?:abre|abrir|inicia|iniciar|lanza|lanzar)\s+(?:la\s+|el\s+)?(?:aplicación\s+|app\s+)?([A-Za-zÁÉÍÓÚáéíóúÑñ0-9 ._-]{2,60})$", command)
+            if app_match:
+                target = app_match.group(1).strip()
+                try:
+                    self.respond(self.tools.system.open_application(target))
+                except Exception as exc:
+                    self.respond(f"No pude abrir {target}: {exc}")
                 return
 
             answer = self.brain.ask(command)
@@ -96,34 +112,26 @@ class Jarvis:
         if self.hud:
             self.hud.set_response(text)
         if self.copilot:
-            try:
-                self.copilot.show_result(text)
-            except Exception:
-                pass
+            try: self.copilot.show_result(text)
+            except Exception: pass
         threading.Thread(target=self.voice.speak, args=(text,), daemon=True).start()
 
     def run_voice_loop(self) -> None:
-        """Compatibilidad con el modo de voz anterior sin HUD."""
         while self.running:
             try:
                 command = self.voice.listen_for_command(seconds=7)
-                if command:
-                    self.process_command(command)
+                if command: self.process_command(command)
             except KeyboardInterrupt:
                 self.shutdown()
             except Exception as exc:
                 print(f"[VOICE] Error: {exc}")
-                self.voice.speak("Tuve un problema con el sistema de voz. Intentaré de nuevo.")
                 time.sleep(1)
 
     def shutdown(self) -> None:
-        if not self.running:
-            return
+        if not self.running: return
         self.running = False
-        try:
-            self.voice.speak("Sistemas apagados.")
-        finally:
-            self.voice.shutdown()
+        try: self.voice.speak("Sistemas apagados.")
+        finally: self.voice.shutdown()
         print("[SYSTEM] JARVIS detenido.")
 
 
@@ -137,10 +145,8 @@ def main() -> int:
         return 0
     except Exception as exc:
         print(f"[FATAL] {exc}")
-        try:
-            jarvis.voice.speak("Se produjo un error crítico.")
-        except Exception:
-            pass
+        try: jarvis.voice.speak("Se produjo un error crítico.")
+        except Exception: pass
         return 1
 
 
