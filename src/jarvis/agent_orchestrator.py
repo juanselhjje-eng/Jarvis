@@ -54,12 +54,15 @@ class AgentOrchestrator:
 
     def set_effort(self, effort: str) -> str:
         effort = effort.lower().strip()
-        if effort not in {"low", "medium", "high"}:
-            raise ValueError("El esfuerzo debe ser low, medium o high.")
+        if effort not in {"low", "medium", "high", "auto"}:
+            raise ValueError("El esfuerzo debe ser low, medium, high o auto.")
         self.effort = effort
         return effort
 
-    def _heuristic_plan(self, goal: str) -> AgentPlan:
+    def _effective_effort(self, goal: str) -> str:
+        return self.protocol.choose_effort(goal) if self.effort == "auto" else self.effort
+
+    def _heuristic_plan(self, goal: str, effort: str) -> AgentPlan:
         lower = goal.lower()
         actions: list[tuple[str, bool]] = []
         if any(x in lower for x in ("teams", "gmail", "correo", "telegram")):
@@ -76,11 +79,12 @@ class AgentOrchestrator:
         for i, (action, explicit_confirmation) in enumerate(actions, 1):
             policy = self.protocol.classify(action)
             steps.append(PlanStep(i, action, requires_confirmation=explicit_confirmation or policy.risk == RiskLevel.CONFIRM))
-        return AgentPlan(goal, self.effort, steps)
+        return AgentPlan(goal, effort, steps)
 
     def make_plan(self, goal: str) -> AgentPlan:
-        plan = self._heuristic_plan(goal)
-        if self.effort == "low":
+        effort = self._effective_effort(goal)
+        plan = self._heuristic_plan(goal, effort)
+        if effort == "low":
             return plan
         try:
             prompt = (
@@ -109,17 +113,21 @@ class AgentOrchestrator:
             print(f"[AGENT] Plan estructurado no disponible: {exc}")
         return plan
 
+    def sanitize_external_data(self, text: str) -> str:
+        """Punto único para pasar texto web/documental al agente como datos no confiables."""
+        return self.protocol.prepare_untrusted(text)
+
     def verify_result(self, goal: str, result: str) -> str:
         """Verificación externa resumida; no expone el razonamiento interno."""
         if not result.strip():
             return "Resultado vacío; se requiere otra comprobación."
-        if self.effort != "high":
+        if self.effort not in {"high", "auto"}:
             return "Resultado recibido y aceptado."
         try:
             check = self.brain.ask(
                 "Comprueba si este resultado satisface la solicitud. Devuelve SOLO una de estas "
                 "dos etiquetas: OK o REVISAR. No muestres razonamiento.\n"
-                f"Solicitud: {goal}\nResultado: {result}"
+                f"Solicitud: {goal}\nResultado: {self.sanitize_external_data(result)}"
             ).strip().upper()
             return "Resultado verificado." if "OK" in check and "REVISAR" not in check else "Resultado requiere revisión."
         except Exception as exc:
