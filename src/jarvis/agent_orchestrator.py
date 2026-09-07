@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .agent_protocol import AgentProtocol, RiskLevel
+
 
 @dataclass
 class PlanStep:
@@ -34,7 +36,7 @@ class AgentPlan:
 
 
 class AgentOrchestrator:
-    """Orquestador de un único agente. No expone cadenas de pensamiento privadas."""
+    """Orquestador único: planifica, aplica políticas y verifica sin exponer CoT privado."""
 
     SAFE_ACTIONS = {
         "open_application", "open_url", "search_web", "system_status",
@@ -48,6 +50,7 @@ class AgentOrchestrator:
         self.computer = computer
         self.on_step = on_step
         self.effort = "medium"
+        self.protocol = AgentProtocol()
 
     def set_effort(self, effort: str) -> str:
         effort = effort.lower().strip()
@@ -69,11 +72,13 @@ class AgentOrchestrator:
             actions.append(("Localizar y verificar los archivos antes de modificar algo.", False))
         if not actions:
             actions = [("Interpretar el objetivo y seleccionar herramientas.", False), ("Ejecutar las acciones compatibles.", False), ("Verificar el resultado.", False)]
-        return AgentPlan(goal, self.effort, [PlanStep(i + 1, action, requires_confirmation=confirm) for i, (action, confirm) in enumerate(actions)])
+        steps = []
+        for i, (action, explicit_confirmation) in enumerate(actions, 1):
+            policy = self.protocol.classify(action)
+            steps.append(PlanStep(i, action, requires_confirmation=explicit_confirmation or policy.risk == RiskLevel.CONFIRM))
+        return AgentPlan(goal, self.effort, steps)
 
     def make_plan(self, goal: str) -> AgentPlan:
-        # El modelo puede sugerir un plan, pero la ejecución se valida contra SAFE_ACTIONS.
-        # Si el proveedor no responde en formato válido, usamos el plan seguro heurístico.
         plan = self._heuristic_plan(goal)
         if self.effort == "low":
             return plan
@@ -96,27 +101,44 @@ class AgentOrchestrator:
                     action = str(item.get("action", "")).strip()
                     if not action:
                         continue
-                    steps.append(PlanStep(i, action, requires_confirmation=bool(item.get("requires_confirmation", False))))
+                    policy = self.protocol.classify(action)
+                    steps.append(PlanStep(i, action, requires_confirmation=bool(item.get("requires_confirmation", False)) or policy.risk == RiskLevel.CONFIRM))
                 if steps:
                     plan.steps = steps
         except Exception as exc:
             print(f"[AGENT] Plan estructurado no disponible: {exc}")
         return plan
 
+    def verify_result(self, goal: str, result: str) -> str:
+        """Verificación externa resumida; no expone el razonamiento interno."""
+        if not result.strip():
+            return "Resultado vacío; se requiere otra comprobación."
+        if self.effort != "high":
+            return "Resultado recibido y aceptado."
+        try:
+            check = self.brain.ask(
+                "Comprueba si este resultado satisface la solicitud. Devuelve SOLO una de estas "
+                "dos etiquetas: OK o REVISAR. No muestres razonamiento.\n"
+                f"Solicitud: {goal}\nResultado: {result}"
+            ).strip().upper()
+            return "Resultado verificado." if "OK" in check and "REVISAR" not in check else "Resultado requiere revisión."
+        except Exception as exc:
+            return f"Verificación no disponible: {exc}"
+
     def execute_visible(self, plan: AgentPlan) -> AgentPlan:
-        """Ejecuta únicamente acciones locales explícitas conocidas por el router/computer."""
-        # En esta versión el modelo no recibe una ruta para ejecutar shell arbitrario.
+        """Aplica la política de seguridad y prepara pasos para herramientas deterministas."""
         for step in plan.steps:
             if self.on_step:
                 self.on_step(step)
-            if step.requires_confirmation:
+            policy = self.protocol.classify(step.action)
+            if policy.risk == RiskLevel.CONFIRM or step.requires_confirmation:
                 step.status = "WAITING_CONFIRMATION"
-                step.result = "Requiere confirmación del usuario."
+                step.result = policy.reason or "Requiere confirmación del usuario."
                 if self.on_step:
                     self.on_step(step)
                 break
             step.status = "READY"
-            step.result = "Paso validado; la ejecución concreta pasa por las herramientas deterministas."
+            step.result = "Paso validado; ejecución mediante herramientas visibles y deterministas."
             if self.on_step:
                 self.on_step(step)
         return plan
