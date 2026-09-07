@@ -10,10 +10,11 @@ from src.jarvis.copilot_panel import CopilotPanel
 from src.jarvis.hud_v2 import JarvisHUDv2
 from src.jarvis.voice_engine import VoiceEngine
 from src.jarvis.agent_orchestrator import AgentOrchestrator
+from src.jarvis.reasoning_layer import ReasoningLayer
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo agente, herramientas deterministas y Mission Control."""
+    """Runtime de JARVIS: un solo agente, planificación, herramientas y Mission Control."""
 
     def __init__(self) -> None:
         self.running = True
@@ -22,6 +23,7 @@ class Jarvis:
         self.voice = VoiceEngine()
         self.hud: JarvisHUDv2 | None = None
         self.copilot: CopilotPanel | None = None
+        self.reasoning = ReasoningLayer(self.brain)
         self.agent = AgentOrchestrator(self.brain, self.tools, self.tools.computer, self._agent_step)
         self._command_lock = threading.Lock()
 
@@ -42,10 +44,8 @@ class Jarvis:
     def _agent_step(self, step) -> None:
         print(f"[MISSION] {step.number}: {step.status} — {step.action} {step.result}")
         if self.hud:
-            try:
-                self.hud.set_mission(step.status, f"{step.number}. {step.action}")
-            except Exception:
-                pass
+            try: self.hud.set_mission(step.status, f"{step.number}. {step.action}")
+            except Exception: pass
 
     @staticmethod
     def _is_planning_request(command: str) -> bool:
@@ -56,8 +56,7 @@ class Jarvis:
 
     def process_command(self, command: str) -> None:
         command = command.strip()
-        if not command or not self.running:
-            return
+        if not command or not self.running: return
         lowered = command.lower().strip()
         if lowered in {"salir", "exit", "quit", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown(); return
@@ -66,16 +65,14 @@ class Jarvis:
 
         with self._command_lock:
             print(f"[USER] {command}")
-
             effort_match = re.search(r"\b(?:esfuerzo|nivel de razonamiento|nivel cognitivo)\s+(bajo|medio|alto|low|medium|high)\b", lowered)
             if effort_match:
                 value = {"bajo": "low", "medio": "medium", "alto": "high"}.get(effort_match.group(1), effort_match.group(1))
-                self.respond(f"Esfuerzo cognitivo configurado en {self.agent.set_effort(value)}.")
-                return
+                self.reasoning.set_effort(value); self.agent.set_effort(value)
+                self.respond(f"Esfuerzo cognitivo configurado en {value}."); return
 
             if lowered in {"mira la pantalla", "observa la pantalla", "captura la pantalla", "analiza la pantalla"}:
-                result = self.tools.handle(command)
-                self.respond(str(result)); return
+                self.respond(str(self.tools.handle(command))); return
 
             provider_match = re.search(r"\b(?:usa|usar|cambia a|cámbiate a|selecciona)\s+(?:el\s+)?(?:modelo\s+)?(gemini|ollama)\b", lowered)
             if provider_match:
@@ -83,16 +80,13 @@ class Jarvis:
                     provider = self.brain.set_provider(provider_match.group(1))
                     if self.hud: self.hud.notify(f"Proveedor cambiado: {provider.upper()}")
                     self.respond(f"Entendido. Ahora usaré {provider}.")
-                except (ValueError, RuntimeError) as exc:
-                    self.respond(str(exc))
+                except (ValueError, RuntimeError) as exc: self.respond(str(exc))
                 return
 
-            # Las órdenes complejas pasan primero por Mission Control: plan -> validación -> ejecución visible.
             if self._is_planning_request(command):
                 plan = self.agent.make_plan(command)
                 self.agent.execute_visible(plan)
-                self.respond(plan.summary())
-                return
+                self.respond(plan.summary()); return
 
             tool_result = self.tools.handle(command)
             if isinstance(tool_result, dict):
@@ -100,18 +94,15 @@ class Jarvis:
                     try: self.respond(f"Entendido. Ahora usaré {self.brain.set_provider(str(tool_result['provider']))}.")
                     except (ValueError, RuntimeError) as exc: self.respond(str(exc))
                     return
-                if tool_result.get("send_message") == "teams":
-                    self.respond(self.tools.teams.send_draft()); return
+                if tool_result.get("send_message") == "teams": self.respond(self.tools.teams.send_draft()); return
                 if tool_result.get("communication"):
-                    action = tool_result.get("action")
-                    educational = str(tool_result.get("educational", "False")).lower() == "true"
+                    action = tool_result.get("action"); educational = str(tool_result.get("educational", "False")).lower() == "true"
                     if action == "open": self.respond(self.tools.teams.open(educational=educational)); return
                     if action == "open_contact": self.respond(self.tools.teams.open_contact(str(tool_result.get("person", "")), educational=educational)); return
                     self.respond(str(tool_result.get("message", "Abrí la aplicación."))); return
-            if isinstance(tool_result, str):
-                self.respond(tool_result); return
+            if isinstance(tool_result, str): self.respond(tool_result); return
 
-            self.respond(self.brain.ask(command))
+            self.respond(self.reasoning.answer(command))
 
     def respond(self, text: str) -> None:
         print(f"[JARVIS] {text}\n")
@@ -140,10 +131,8 @@ class Jarvis:
 
 def main() -> int:
     jarvis = Jarvis()
-    try:
-        jarvis.start(); return 0
-    except KeyboardInterrupt:
-        jarvis.shutdown(); return 0
+    try: jarvis.start(); return 0
+    except KeyboardInterrupt: jarvis.shutdown(); return 0
     except Exception as exc:
         print(f"[FATAL] {exc}")
         try: jarvis.voice.speak("Se produjo un error crítico.")
