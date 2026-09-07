@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from enum import Enum
+
+
+class RiskLevel(str, Enum):
+    SAFE = "safe"
+    CONFIRM = "confirm"
+
+
+@dataclass(frozen=True)
+class ActionPolicy:
+    name: str
+    risk: RiskLevel
+    reason: str = ""
+
+
+class AgentProtocol:
+    """Política de ejecución: razonamiento privado, OODA visible y human-in-the-loop."""
+
+    EXTERNAL_PATTERNS = (
+        r"\benv[ií]a(?:r)?\b", r"\bmanda(?:r)?\b", r"\bescr[ií]be(?:r)?\b",
+        r"\bpublica(?:r)?\b", r"\bpostea(?:r)?\b", r"\btransfer(?:ir)?\b",
+        r"\bpaga(?:r)?\b", r"\bcompr(?:a|ar)\b",
+    )
+    DESTRUCTIVE_PATTERNS = (
+        r"\bborr(?:a|ar)\b", r"\belimina(?:r)?\b", r"\bformatea(?:r)?\b",
+        r"\bdestruy(?:e|ir)\b", r"\bvac[ií]a(?:r)?\b",
+    )
+
+    def classify(self, action: str) -> ActionPolicy:
+        text = action.lower().strip()
+        if any(re.search(p, text) for p in self.EXTERNAL_PATTERNS):
+            return ActionPolicy(action, RiskLevel.CONFIRM, "Acción externa: requiere autorización explícita.")
+        if any(re.search(p, text) for p in self.DESTRUCTIVE_PATTERNS):
+            return ActionPolicy(action, RiskLevel.CONFIRM, "Acción destructiva: requiere autorización explícita.")
+        return ActionPolicy(action, RiskLevel.SAFE)
+
+    @staticmethod
+    def sanitize_untrusted(text: str) -> str:
+        """Marca instrucciones incrustadas en datos web/documentales como no confiables."""
+        suspicious = re.compile(
+            r"(?:ignore|ignora|olvida|disregard).{0,80}(?:instructions|instrucciones)"
+            r"|(?:borr(?:a|ar)|delete|format).{0,80}(?:system|sistema|disk|disco)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        return suspicious.sub("[CONTENIDO NO CONFIABLE OMITIDO]", text)
+
+    @staticmethod
+    def observation_policy() -> dict[str, object]:
+        return {
+            "screen_capture": "explicit_only",
+            "continuous_surveillance": False,
+            "credential_capture": False,
+            "source_of_truth": "visible_screen + deterministic tools",
+        }
