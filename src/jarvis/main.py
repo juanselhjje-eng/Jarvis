@@ -7,13 +7,13 @@ from .brain import JarvisBrain
 from .command_router import CommandRouter
 from .evidence import EvidenceBoard
 from .execution import ExecutionTracker, TaskState
-from .hud_hrz import JarvisHRZHUD
+from .hud_v4 import JarvisHUDv4
 from .task_planner import TaskPlanner
 from .voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime de JARVIS: un solo cerebro, herramientas, misión, planificación y verificación."""
+    """Runtime de JARVIS: un solo cerebro, herramientas, visión puntual y Mission Control."""
 
     def __init__(self) -> None:
         self.running = True
@@ -23,7 +23,7 @@ class Jarvis:
         self.execution = ExecutionTracker()
         self.evidence = EvidenceBoard()
         self.voice = VoiceEngine()
-        self.hud: JarvisHRZHUD | None = None
+        self.hud: JarvisHUDv4 | None = None
         self._command_lock = threading.Lock()
         self._voice_command_lock = threading.Lock()
 
@@ -34,7 +34,7 @@ class Jarvis:
             self.voice.speak(message)
             return
 
-        self.hud = JarvisHRZHUD(
+        self.hud = JarvisHUDv4(
             brain=self.brain,
             voice=self.voice,
             process_command=self.process_command,
@@ -42,10 +42,9 @@ class Jarvis:
             evidence=self.evidence,
             execution=self.execution,
         )
-        self.hud.add_message("SYSTEM", f"JARVIS-HRZ ONLINE. Cerebro: {self.brain.provider.upper()}. Voz, memoria, planificación, tareas, recordatorios y control activos.")
-
-        self.hud.set_state("HABLANDO")
-        self.voice.speak("JARVIS-HRZ iniciado. Te escucho.")
+        self.hud.add_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // visión puntual + control visible + aprobación humana.")
+        self.hud.update_provider()
+        self.voice.speak("JARVIS iniciado. Te escucho.")
         if not self.running:
             return
         self.hud.set_state("ESCUCHANDO")
@@ -71,6 +70,20 @@ class Jarvis:
             self.execution.set_state(TaskState.INTENT)
             if self.hud:
                 self.hud.set_state("ANALIZANDO")
+
+            # Computer Use visual: captura puntual + análisis multimodal, nunca vigilancia continua.
+            if lowered in {"mira la pantalla", "observa la pantalla", "captura la pantalla", "analiza la pantalla", "qué hay en mi pantalla", "que hay en mi pantalla"}:
+                if self.hud:
+                    self.hud.set_state("OBSERVANDO")
+                observation = self.tools.computer.observe()
+                if observation.image_base64:
+                    answer = self.brain.analyze_screen(observation.image_base64, command)
+                else:
+                    answer = observation.note
+                self.execution.set_state(TaskState.VERIFYING)
+                self.execution.finish(answer, verified=True)
+                self.respond(answer)
+                return
 
             investigation = lowered.startswith(("investiga ", "investiga:", "investigar "))
             if investigation:
@@ -188,7 +201,7 @@ class Jarvis:
             except Exception as exc:
                 print(f"[VOICE] Error: {exc}")
                 if self.hud:
-                    self.hud.show_alert(f"Error de reconocimiento: {exc}", "#ed6375")
+                    self.hud.show_alert(f"Error de reconocimiento: {exc}", RED)
                     self.hud.set_state("ESCUCHANDO")
                 time.sleep(1)
             finally:
