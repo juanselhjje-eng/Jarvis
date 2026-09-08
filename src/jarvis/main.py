@@ -201,7 +201,7 @@ class Jarvis:
             except Exception as exc:
                 print(f"[VOICE] Error: {exc}")
                 if self.hud:
-                    self.hud.show_alert(f"Error de reconocimiento: {exc}", RED)
+                    self.hud.show_alert(f"Error de reconocimiento: {exc}", "#ff5d73")
                     self.hud.set_state("ESCUCHANDO")
                 time.sleep(1)
             finally:
