@@ -32,7 +32,6 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es").strip()
 SAMPLE_RATE = 16000
 WAKE_WORDS = tuple(word.strip().lower() for word in os.getenv("JARVIS_WAKE_WORDS", "jarvis,viernes").split(",") if word.strip())
-# Local TTS is the default; ElevenLabs remains an optional explicit provider.
 TTS_PROVIDER = os.getenv("JARVIS_TTS", "local").strip().lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "W5JElH3dK1UYYAiHH7uh").strip()
@@ -43,7 +42,7 @@ VOICE_VOLUME = float(os.getenv("LOCAL_VOICE_VOLUME", "1.0"))
 
 
 class VoiceEngine:
-    """Entrada de voz local y salida TTS local, con ElevenLabs opcional."""
+    """Entrada de voz controlada por el usuario y salida TTS."""
 
     def __init__(self) -> None:
         self.tts = None
@@ -54,6 +53,7 @@ class VoiceEngine:
         self._listen_lock = threading.Lock()
         self._speaking = threading.Event()
         self._shutdown = threading.Event()
+        self._microphone_enabled = threading.Event()
         self._load_tts()
 
     @property
@@ -63,6 +63,33 @@ class VoiceEngine:
     @property
     def is_listening(self) -> bool:
         return self._listen_lock.locked()
+
+    @property
+    def microphone_enabled(self) -> bool:
+        return self._microphone_enabled.is_set()
+
+    def enable_microphone(self) -> bool:
+        if self._shutdown.is_set():
+            return False
+        self._microphone_enabled.set()
+        print("[VOICE] Micrófono ACTIVADO.")
+        return True
+
+    def disable_microphone(self) -> bool:
+        self._microphone_enabled.clear()
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        print("[VOICE] Micrófono DESACTIVADO.")
+        return True
+
+    def toggle_microphone(self) -> bool:
+        if self.microphone_enabled:
+            self.disable_microphone()
+        else:
+            self.enable_microphone()
+        return self.microphone_enabled
 
     def _load_tts(self) -> None:
         self._load_pyttsx3()
@@ -141,13 +168,30 @@ class VoiceEngine:
             print("[VOICE] Whisper listo.")
 
     def record(self, seconds: float = 7.0) -> np.ndarray:
-        if self._shutdown.is_set():
+        if self._shutdown.is_set() or not self.microphone_enabled:
             return np.empty(0, dtype=np.float32)
-        frames = int(seconds * SAMPLE_RATE)
+        # Grab short chunks so disabling the microphone interrupts capture quickly.
+        chunk_seconds = 0.25
+        chunks: list[np.ndarray] = []
+        deadline = time.monotonic() + seconds
         print("[VOICE] Escuchando...")
-        audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=1, dtype="float32")
-        sd.wait()
-        return audio.flatten()
+        while self.microphone_enabled and not self._shutdown.is_set() and time.monotonic() < deadline:
+            duration = min(chunk_seconds, max(0.0, deadline - time.monotonic()))
+            if duration <= 0:
+                break
+            try:
+                frames = max(1, int(duration * SAMPLE_RATE))
+                audio = sd.rec(frames, samplerate=SAMPLE_RATE, channels=1, dtype="float32")
+                sd.wait()
+            except Exception as exc:
+                print(f"[VOICE] Error capturando audio: {exc}")
+                break
+            if not self.microphone_enabled:
+                break
+            chunks.append(audio.flatten())
+        if not chunks:
+            return np.empty(0, dtype=np.float32)
+        return np.concatenate(chunks)
 
     def transcribe(self, audio: np.ndarray) -> str:
         if audio.size == 0:
@@ -172,12 +216,14 @@ class VoiceEngine:
         with self._listen_lock:
             while self.is_speaking and not self._shutdown.is_set():
                 time.sleep(0.1)
-            if self._shutdown.is_set():
+            if self._shutdown.is_set() or not self.microphone_enabled:
                 return None
             try:
                 text = self.listen(seconds)
             except Exception as exc:
                 print(f"[VOICE] Error de escucha: {exc}")
+                return None
+            if not self.microphone_enabled:
                 return None
             print(f"[VOICE] Reconocido: {text}")
             if not text or not self.has_wake_word(text):
@@ -187,6 +233,7 @@ class VoiceEngine:
 
     def shutdown(self) -> None:
         self._shutdown.set()
+        self._microphone_enabled.clear()
         try:
             sd.stop()
             if self.tts:
