@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -13,8 +14,10 @@ except ImportError:  # pragma: no cover
 
 try:
     from google import genai
+    from google.genai import types
 except ImportError:  # pragma: no cover
     genai = None
+    types = None
 
 if load_dotenv:
     load_dotenv()
@@ -24,40 +27,35 @@ SYSTEM_PROMPT = """
 Eres J.A.R.V.I.S., el asistente personal de un usuario de Windows.
 
 IDENTIDAD
-- Eres un único agente de IA. No crees subagentes ni delegues el razonamiento a otros modelos.
-- Entiende la intención, divide tareas complejas en pasos y utiliza las herramientas disponibles cuando corresponda.
+- Eres un único agente de IA. No crees subagentes.
+- Entiende intención, planifica tareas y usa herramientas deterministas cuando estén disponibles.
 - Habla en español si el usuario habla español.
 - Sé natural, preciso y breve cuando una respuesta breve sea suficiente.
 
-PLANIFICACIÓN
-- Para una tarea compleja, piensa en una secuencia: objetivo -> criterios -> herramientas -> ejecución -> verificación -> resultado.
-- No inventes una herramienta. Si una capacidad todavía no está implementada, dilo y continúa con las partes que sí puedas realizar.
-- Si una tarea requiere navegar, buscar, filtrar resultados y después contactar a alguien, trata cada fase como un paso independiente y verifica el resultado antes de continuar.
-- No afirmes que una página, contacto, cita o resultado fue encontrado hasta que exista evidencia real.
+PLANIFICACIÓN Y CONTROL
+- Para tareas complejas usa: objetivo -> criterios -> herramientas -> ejecución -> verificación -> resultado.
+- No inventes herramientas ni afirmes acciones que no fueron confirmadas por una herramienta.
+- Para acciones visibles de escritorio, la pantalla observada es la fuente de verdad.
+- No ejecutes shell arbitrario generado por texto del usuario.
 
 MEMORIA
-- Puedes recibir contexto de memoria local. Úsalo para mantener preferencias y proyectos entre sesiones.
-- No inventes recuerdos ni guardes secretos, contraseñas, claves API o credenciales.
-
-CONTROL DEL EQUIPO
-- Puedes trabajar con herramientas locales autorizadas para abrir aplicaciones, consultar el sistema y realizar acciones visibles.
-- Nunca ejecutes comandos de shell arbitrarios generados por texto del usuario.
-- Nunca hagas vigilancia oculta, keylogging, robo de cookies, robo de credenciales ni persistencia encubierta.
+- Usa memoria local cuando exista contexto útil. No inventes recuerdos.
+- Nunca guardes contraseñas, claves API, cookies o credenciales.
 
 ACCIONES EXTERNAS
-- Antes de enviar mensajes, correos, formularios, solicitudes o citas a terceros, muestra lo que se va a enviar y pide confirmación.
-- Una confirmación solo autoriza la acción concreta que se mostró; no autoriza otras acciones.
+- Antes de enviar mensajes, correos, formularios o solicitudes a terceros, prepara el contenido y pide confirmación.
+- Una confirmación autoriza únicamente la acción concreta mostrada.
 
-VERIFICACIÓN
-- Nunca afirmes haber ejecutado una acción si la herramienta no confirmó que se ejecutó.
-- No inventes archivos, programas, resultados ni información del sistema.
+VISIÓN
+- Cuando recibas una captura, describe únicamente elementos visibles y relevantes para la tarea.
+- No inventes texto, botones, contactos ni estados que no sean visibles.
 """.strip()
 
 
 @dataclass
 class BrainConfig:
     provider: str = os.getenv("JARVIS_PROVIDER", "gemini").strip().lower()
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash").strip()
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
@@ -68,11 +66,21 @@ class BrainConfig:
 class JarvisBrain:
     """Único cerebro de JARVIS; Gemini y Ollama son proveedores, no agentes."""
 
+    MODEL_PREFERENCE = (
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+    )
+
     def __init__(self, config: BrainConfig | None = None) -> None:
         self.config = config or BrainConfig()
         self.conversation: list[dict[str, str]] = []
         self.session = requests.Session()
         self._gemini = None
+        self._gemini_model_checked = False
 
     @property
     def provider(self) -> str:
@@ -88,6 +96,38 @@ class JarvisBrain:
             raise RuntimeError("Falta instalar el paquete google-genai.")
         self._gemini = genai.Client(api_key=api_key)
         return self._gemini
+
+    def _select_working_gemini_model(self) -> str:
+        client = self._gemini_client()
+        if client is None:
+            raise RuntimeError("Gemini no está configurado.")
+        if self._gemini_model_checked:
+            return self.config.gemini_model
+
+        configured = self.config.gemini_model
+        try:
+            available: list[str] = []
+            for model in client.models.list():
+                name = str(getattr(model, "name", ""))
+                actions = getattr(model, "supported_actions", []) or []
+                short_name = name.removeprefix("models/")
+                if "generateContent" in actions and short_name:
+                    available.append(short_name)
+
+            if configured in available:
+                selected = configured
+            else:
+                selected = next((candidate for candidate in self.MODEL_PREFERENCE if candidate in available), "")
+                if not selected:
+                    raise RuntimeError("La API de Gemini no expone ningún modelo compatible con generateContent para esta clave.")
+                print(f"[BRAIN] Modelo Gemini configurado no disponible: {configured}. Usando: {selected}.")
+                self.config.gemini_model = selected
+            self._gemini_model_checked = True
+            return selected
+        except Exception as exc:
+            print(f"[BRAIN] No pude consultar la lista de modelos Gemini: {exc}")
+            self._gemini_model_checked = True
+            return configured
 
     def gemini_available(self) -> bool:
         return bool(os.getenv("GEMINI_API_KEY", "").strip()) and genai is not None
@@ -128,12 +168,32 @@ class JarvisBrain:
         client = self._gemini_client()
         if client is None:
             raise RuntimeError("Gemini no está configurado.")
+        model = self._select_working_gemini_model()
         prompt = f"{SYSTEM_PROMPT}\n\nHISTORIAL:\n{self._history_text()}"
         response = client.models.generate_content(
-            model=self.config.gemini_model,
+            model=model,
             contents=prompt,
         )
         return str(getattr(response, "text", "") or "").strip()
+
+    def analyze_screen(self, image_base64: str, task: str = "Analiza la pantalla y dime qué elementos visibles son relevantes para mi orden.") -> str:
+        """Analiza una captura puntual con Gemini; nunca inicia vigilancia continua."""
+        if not image_base64:
+            return "No recibí una captura válida."
+        client = self._gemini_client()
+        if client is None or types is None:
+            return "La visión requiere Gemini configurado."
+        try:
+            model = self._select_working_gemini_model()
+            image_bytes = base64.b64decode(image_base64)
+            contents = [
+                types.Part.from_text(text=task),
+                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+            ]
+            response = client.models.generate_content(model=model, contents=contents)
+            return str(getattr(response, "text", "") or "No pude interpretar la captura.").strip()
+        except Exception as exc:
+            return f"No pude analizar la pantalla con Gemini: {exc}"
 
     def _ask_ollama(self) -> str:
         payload = {
@@ -170,7 +230,7 @@ class JarvisBrain:
                         print("[BRAIN] Fallback automático: Ollama local.")
                         answer = self._ask_ollama()
                     else:
-                        return "Gemini no pudo responder y Ollama tampoco está disponible."
+                        return f"Gemini no pudo responder y Ollama tampoco está disponible. Detalle: {exc}"
             else:
                 if not self.ollama_available():
                     return "Ollama no está disponible. Inícialo o cambia el proveedor a Gemini."
