@@ -9,20 +9,22 @@ from src.jarvis.brain import JarvisBrain
 from src.jarvis.command_router import CommandRouter
 from src.jarvis.computer_agent import ComputerAgent
 from src.jarvis.hud_v5 import JarvisHUDv5
+from src.jarvis.memory import LocalMemory
 from src.jarvis.neural_lab import NeuralLab
 from src.jarvis.reasoning_layer import ReasoningLayer
 from src.jarvis.voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime único: cerebro, herramientas, visión, Computer Use, memoria y aprendizaje."""
+    """Runtime único: cerebro, memoria, herramientas, visión, Computer Use y aprendizaje."""
 
     OPENABLE = r"chrome|google chrome|edge|microsoft edge|firefox|teams|microsoft teams|notepad|bloc de notas|explorer|explorador|calculadora|calculator|settings|configuración|discord|spotify|github|youtube|gmail"
 
     def __init__(self) -> None:
         self.running = True
         self.busy = False
-        self.brain = JarvisBrain()
+        self.memory = LocalMemory()
+        self.brain = JarvisBrain(memory=self.memory)
         self.tools = CommandRouter()
         self.voice = VoiceEngine()
         self.protocol = AgentProtocol()
@@ -39,8 +41,6 @@ class Jarvis:
         )
 
     def start(self) -> None:
-        # La UI siempre arranca aunque el proveedor de IA esté temporalmente caído.
-        # Esto evita que un fallo de Gemini/Ollama deje a JARVIS sin interfaz de diagnóstico.
         available = self.brain.is_available()
         self.hud = JarvisHUDv5(
             self.brain,
@@ -51,14 +51,13 @@ class Jarvis:
             stop_mission=self.computer_agent.stop,
         )
         self.hud.update_provider()
-
         if not available:
             message = "CORE OFFLINE: configura GEMINI_API_KEY o inicia Ollama. La interfaz sigue disponible para diagnóstico."
             print(f"[ERROR] {message}")
             self._hud_message("SYSTEM", message)
             self._hud_state("ERROR")
         else:
-            self._hud_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // VISION + COMPUTER USE + OODA + NEURAL LAB")
+            self._hud_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // VISION + COMPUTER USE + OODA + MEMORY + NEURAL LAB")
             self._hud_state("ONLINE")
             threading.Thread(target=self.voice.speak, args=("JARVIS iniciado. Te escucho.",), daemon=True).start()
             threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
@@ -85,7 +84,6 @@ class Jarvis:
             self._hud_state("VERIFICANDO")
 
     def _agent_observation(self, observation) -> None:
-        # El último frame de cada ciclo OODA se muestra en el HUD; no se almacena como vigilancia continua.
         if self.hud:
             try:
                 self.hud.show_screen(observation.image_base64, observation.width, observation.height)
@@ -114,16 +112,23 @@ class Jarvis:
 
     @staticmethod
     def _needs_visual_agent(command: str) -> bool:
-        text = command.lower()
-        markers = (
-            "dentro de", "dentro del", "en la aplicación", "en la app", "en la pagina", "en la página",
-            "en la web", "en el sitio", "haz clic", "haz click", "clica", "pulsa", "presiona",
-            "rellena", "escribe en", "selecciona", "busca dentro", "abre esto y", "abre " ,
-            "entra y", "ve y", "hazlo en", "házlo en", "automatiza", "haz esto en", "clic en",
-            "interactúa", "interactua", "controla la pantalla", "usa la pantalla", "mira la pantalla",
-            "observa la pantalla", "arrástralo", "arrastra", "desplázate", "desplazate",
+        text = command.lower().strip()
+        # Abrir una aplicación por sí solo sigue siendo una operación determinista.
+        # Computer Use entra cuando el usuario describe una interacción posterior.
+        explicit = (
+            "haz clic", "haz click", "clica", "pulsa", "presiona", "rellena", "selecciona",
+            "busca dentro", "escribe en", "clic en", "interactúa", "interactua", "controla la pantalla",
+            "usa la pantalla", "mira la pantalla", "observa la pantalla", "arrástralo", "arrastra",
+            "desplázate", "desplazate", "automatiza", "dentro de la", "dentro del", "en la aplicación",
+            "en la app", "en la pagina", "en la página", "en la web", "en el sitio", "haz esto en",
+            "hazlo en", "entra y", "ve y", "abre esto y", "abre ",
         )
-        return any(marker in text for marker in markers)
+        if any(marker in text for marker in explicit):
+            # "abre chrome" no necesita visión; "abre chrome y busca X" sí.
+            if re.fullmatch(r"(?:abre|abrir|inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(?:la\s+|el\s+)?(?:aplicación\s+|app\s+)?(?:chrome|google chrome|edge|microsoft edge|firefox|teams|microsoft teams|notepad|bloc de notas|explorer|explorador|calculadora|calculator|settings|configuración|discord|spotify|github|youtube|gmail)", text):
+                return False
+            return True
+        return False
 
     @staticmethod
     def _screen_request(command: str) -> bool:
@@ -150,6 +155,12 @@ class Jarvis:
             except Exception:
                 pass
         result = self.computer_agent.run(command, max_steps=12)
+        success = not result.lower().startswith(("misión detenida", "la decisión visual", "acción visual", "alcancé el límite", "no recibí"))
+        self.memory.record_task(command, result, success)
+        if success:
+            self.memory.learn("Esta misión terminó con un resultado verificable.", context=command)
+        else:
+            self.memory.learn("Esta misión necesita revisar la pantalla y corregir el flujo antes de repetirlo.", context=command)
         self.respond(result)
 
     def process_command(self, command: str) -> None:
@@ -183,7 +194,15 @@ class Jarvis:
 
         if lowered in {"limpiar conversación", "limpia la conversación", "olvida esta conversación"}:
             self.brain.reset_conversation()
-            self.respond("Conversación limpiada.")
+            self.respond("Conversación limpiada. La memoria persistente no fue borrada.")
+            return
+        if lowered in {"olvida todo", "borra mi memoria", "limpia mi memoria"}:
+            self.memory.clear()
+            self.brain.reset_conversation()
+            self.respond("Memoria persistente y conversación limpiadas.")
+            return
+        if lowered in {"qué recuerdas de mí", "que recuerdas de mi", "qué recuerdas", "que recuerdas", "estado de memoria", "estado de mi memoria"}:
+            self.respond(self.memory.summary())
             return
 
         neural_markers = ("crea una red neuronal", "crea una red neural", "entrena una red neuronal", "haz una red neuronal", "prueba una red neuronal")
@@ -191,10 +210,11 @@ class Jarvis:
             self._hud_state("APRENDIENDO")
             result = self.neural.create_and_train()
             response = f"Neural Lab completado. Arquitectura {result['architecture']}, accuracy {result['accuracy']:.0%}, loss {result['loss']}. Modelo guardado en {result['path']}."
+            self.memory.learn("El usuario pidió crear y entrenar una red neuronal local.", context=command)
             self.respond(response)
             return
         if lowered in {"estado del neural lab", "estado del aprendizaje", "qué has aprendido", "que has aprendido"}:
-            self.respond(self.neural.status())
+            self.respond(self.neural.status() + "\n" + self.memory.summary())
             return
 
         effort = self._effort(command)
