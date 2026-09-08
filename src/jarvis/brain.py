@@ -9,13 +9,13 @@ import requests
 
 try:
     from dotenv import load_dotenv
-except ImportError:  # pragma: no cover
+except ImportError:
     load_dotenv = None
 
 try:
     from google import genai
     from google.genai import types
-except ImportError:  # pragma: no cover
+except ImportError:
     genai = None
     types = None
 
@@ -24,38 +24,34 @@ if load_dotenv:
 
 
 SYSTEM_PROMPT = """
-Eres J.A.R.V.I.S., el asistente personal de un usuario de Windows.
+Eres J.A.R.V.I.S., un único agente personal para Windows.
 
-IDENTIDAD
-- Eres un único agente de IA. No crees subagentes.
-- Entiende intención, planifica tareas y usa herramientas deterministas cuando estén disponibles.
-- Habla en español si el usuario habla español.
-- Sé natural, preciso y breve cuando una respuesta breve sea suficiente.
+Tu trabajo no es solamente conversar: cuando el usuario pide una acción, debes distinguir entre
+responder, usar una herramienta determinista y controlar de forma visible una aplicación o web.
+Nunca inventes que hiciste algo. La pantalla observada y el resultado de una herramienta son la
+fuente de verdad.
 
-PLANIFICACIÓN Y CONTROL
-- Para tareas complejas usa: objetivo -> criterios -> herramientas -> ejecución -> verificación -> resultado.
-- No inventes herramientas ni afirmes acciones que no fueron confirmadas por una herramienta.
-- Para acciones visibles de escritorio, la pantalla observada es la fuente de verdad.
-- No ejecutes shell arbitrario generado por texto del usuario.
+Para tareas complejas piensa en: objetivo -> criterios -> herramienta -> acción -> observación ->
+corrección -> resultado. No muestres cadena de pensamiento privada; comunica solo decisiones,
+estado y resultados útiles.
 
-MEMORIA
-- Usa memoria local cuando exista contexto útil. No inventes recuerdos.
-- Nunca guardes contraseñas, claves API, cookies o credenciales.
+ACCIONES EXTERNAS: antes de enviar mensajes, correos, formularios, publicaciones, compras o
+cambios destructivos, prepara la acción y exige una confirmación explícita del usuario.
 
-ACCIONES EXTERNAS
-- Antes de enviar mensajes, correos, formularios o solicitudes a terceros, prepara el contenido y pide confirmación.
-- Una confirmación autoriza únicamente la acción concreta mostrada.
+VISIÓN: una captura es puntual y solo debe usarse para la tarea solicitada. No inventes botones,
+texto, contactos o estados que no sean visibles.
 
-VISIÓN
-- Cuando recibas una captura, describe únicamente elementos visibles y relevantes para la tarea.
-- No inventes texto, botones, contactos ni estados que no sean visibles.
+MEMORIA: usa memoria local cuando exista contexto útil. Nunca guardes contraseñas, cookies, tokens
+ni claves API.
+
+HABLA EN ESPAÑOL cuando el usuario hable español.
 """.strip()
 
 
 @dataclass
 class BrainConfig:
     provider: str = os.getenv("JARVIS_PROVIDER", "gemini").strip().lower()
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash").strip()
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
@@ -64,15 +60,13 @@ class BrainConfig:
 
 
 class JarvisBrain:
-    """Único cerebro de JARVIS; Gemini y Ollama son proveedores, no agentes."""
+    """Un solo cerebro con Gemini primario y Ollama como alternativa local."""
 
     MODEL_PREFERENCE = (
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
     )
 
     def __init__(self, config: BrainConfig | None = None) -> None:
@@ -93,7 +87,7 @@ class JarvisBrain:
         if not api_key:
             return None
         if genai is None:
-            raise RuntimeError("Falta instalar el paquete google-genai.")
+            raise RuntimeError("Falta instalar google-genai.")
         self._gemini = genai.Client(api_key=api_key)
         return self._gemini
 
@@ -113,19 +107,18 @@ class JarvisBrain:
                 short_name = name.removeprefix("models/")
                 if "generateContent" in actions and short_name:
                     available.append(short_name)
-
             if configured in available:
                 selected = configured
             else:
                 selected = next((candidate for candidate in self.MODEL_PREFERENCE if candidate in available), "")
                 if not selected:
-                    raise RuntimeError("La API de Gemini no expone ningún modelo compatible con generateContent para esta clave.")
-                print(f"[BRAIN] Modelo Gemini configurado no disponible: {configured}. Usando: {selected}.")
-                self.config.gemini_model = selected
+                    raise RuntimeError("La clave Gemini no expone un modelo compatible con generateContent.")
+                print(f"[BRAIN] {configured} no está disponible. Seleccionado: {selected}.")
+            self.config.gemini_model = selected
             self._gemini_model_checked = True
             return selected
         except Exception as exc:
-            print(f"[BRAIN] No pude consultar la lista de modelos Gemini: {exc}")
+            print(f"[BRAIN] No pude consultar modelos Gemini: {exc}")
             self._gemini_model_checked = True
             return configured
 
@@ -140,16 +133,14 @@ class JarvisBrain:
             return False
 
     def is_available(self) -> bool:
-        if self.provider == "gemini":
-            return self.gemini_available() or self.ollama_available()
-        return self.ollama_available()
+        return (self.gemini_available() or self.ollama_available()) if self.provider == "gemini" else self.ollama_available()
 
     def set_provider(self, provider: str) -> str:
         provider = provider.strip().lower()
         if provider not in {"ollama", "gemini"}:
             raise ValueError("Proveedor no válido. Usa gemini u ollama.")
         if provider == "gemini" and not self.gemini_available():
-            raise RuntimeError("Gemini no está configurado. Añade GEMINI_API_KEY al archivo .env.")
+            raise RuntimeError("Gemini no está configurado. Añade GEMINI_API_KEY al .env.")
         if provider == "ollama" and not self.ollama_available():
             raise RuntimeError("Ollama no está disponible.")
         self.config.provider = provider
@@ -159,25 +150,21 @@ class JarvisBrain:
         self.conversation.clear()
 
     def _history_text(self) -> str:
-        return "\n".join(
-            f"{'Usuario' if m['role'] == 'user' else 'J.A.R.V.I.S.'}: {m['content']}"
-            for m in self.conversation
-        )
+        return "\n".join(f"{'Usuario' if m['role'] == 'user' else 'J.A.R.V.I.S.'}: {m['content']}" for m in self.conversation)
 
     def _ask_gemini(self) -> str:
         client = self._gemini_client()
         if client is None:
             raise RuntimeError("Gemini no está configurado.")
         model = self._select_working_gemini_model()
-        prompt = f"{SYSTEM_PROMPT}\n\nHISTORIAL:\n{self._history_text()}"
         response = client.models.generate_content(
             model=model,
-            contents=prompt,
+            contents=f"{SYSTEM_PROMPT}\n\nHISTORIAL:\n{self._history_text()}",
         )
         return str(getattr(response, "text", "") or "").strip()
 
-    def analyze_screen(self, image_base64: str, task: str = "Analiza la pantalla y dime qué elementos visibles son relevantes para mi orden.") -> str:
-        """Analiza una captura puntual con Gemini; nunca inicia vigilancia continua."""
+    def analyze_screen(self, image_base64: str, task: str = "Analiza la pantalla.") -> str:
+        """Analiza una captura puntual. No activa captura continua."""
         if not image_base64:
             return "No recibí una captura válida."
         client = self._gemini_client()
@@ -186,11 +173,13 @@ class JarvisBrain:
         try:
             model = self._select_working_gemini_model()
             image_bytes = base64.b64decode(image_base64)
-            contents = [
-                types.Part.from_text(text=task),
-                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            ]
-            response = client.models.generate_content(model=model, contents=contents)
+            response = client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Part.from_text(text=task),
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                ],
+            )
             return str(getattr(response, "text", "") or "No pude interpretar la captura.").strip()
         except Exception as exc:
             return f"No pude analizar la pantalla con Gemini: {exc}"
@@ -203,11 +192,7 @@ class JarvisBrain:
             "keep_alive": self.config.ollama_keep_alive,
             "options": {"temperature": 0.2},
         }
-        response = self.session.post(
-            f"{self.config.ollama_host}/api/chat",
-            json=payload,
-            timeout=self.config.timeout,
-        )
+        response = self.session.post(f"{self.config.ollama_host}/api/chat", json=payload, timeout=self.config.timeout)
         response.raise_for_status()
         data: dict[str, Any] = response.json()
         return str(data.get("message", {}).get("content", "")).strip()
@@ -216,10 +201,8 @@ class JarvisBrain:
         user_message = user_message.strip()
         if not user_message:
             return "No recibí ninguna orden."
-
         self.conversation.append({"role": "user", "content": user_message})
-        self.conversation = self.conversation[-self.config.max_history_messages :]
-
+        self.conversation = self.conversation[-self.config.max_history_messages:]
         try:
             if self.provider == "gemini":
                 try:
@@ -235,11 +218,10 @@ class JarvisBrain:
                 if not self.ollama_available():
                     return "Ollama no está disponible. Inícialo o cambia el proveedor a Gemini."
                 answer = self._ask_ollama()
-
             if not answer:
                 answer = "El proveedor no devolvió una respuesta válida."
             self.conversation.append({"role": "assistant", "content": answer})
-            self.conversation = self.conversation[-self.config.max_history_messages :]
+            self.conversation = self.conversation[-self.config.max_history_messages:]
             return answer
         except requests.Timeout:
             return "La respuesta de Ollama tardó demasiado."
