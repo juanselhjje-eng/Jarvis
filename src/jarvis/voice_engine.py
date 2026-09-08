@@ -32,7 +32,8 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es").strip()
 SAMPLE_RATE = 16000
 WAKE_WORDS = tuple(word.strip().lower() for word in os.getenv("JARVIS_WAKE_WORDS", "jarvis,viernes").split(",") if word.strip())
-TTS_PROVIDER = os.getenv("JARVIS_TTS", "elevenlabs").strip().lower()
+# Local TTS is the default; ElevenLabs remains an optional explicit provider.
+TTS_PROVIDER = os.getenv("JARVIS_TTS", "local").strip().lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "W5JElH3dK1UYYAiHH7uh").strip()
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2").strip()
@@ -42,7 +43,7 @@ VOICE_VOLUME = float(os.getenv("LOCAL_VOICE_VOLUME", "1.0"))
 
 
 class VoiceEngine:
-    """Entrada de voz local y salida TTS con ElevenLabs y respaldo local real."""
+    """Entrada de voz local y salida TTS local, con ElevenLabs opcional."""
 
     def __init__(self) -> None:
         self.tts = None
@@ -64,7 +65,6 @@ class VoiceEngine:
         return self._listen_lock.locked()
 
     def _load_tts(self) -> None:
-        # Siempre cargamos el TTS local: así ElevenLabs puede fallar sin dejar a JARVIS mudo.
         self._load_pyttsx3()
         if TTS_PROVIDER != "elevenlabs":
             return
@@ -92,7 +92,7 @@ class VoiceEngine:
                 if any(marker in data for marker in ("spanish", "es_", "español", "es-")):
                     self.tts.setProperty("voice", voice.id)
                     break
-            print("[VOICE] TTS local de respaldo listo.")
+            print("[VOICE] TTS local listo.")
         except Exception as exc:
             print(f"[VOICE] No se pudo iniciar TTS local: {exc}")
 
@@ -100,20 +100,9 @@ class VoiceEngine:
         if self.elevenlabs is None or self._elevenlabs_failed or self._shutdown.is_set():
             return False
         try:
-            kwargs = {
-                "text": text,
-                "voice_id": ELEVENLABS_VOICE_ID,
-                "model_id": ELEVENLABS_MODEL,
-                "output_format": ELEVENLABS_OUTPUT_FORMAT,
-            }
+            kwargs = {"text": text, "voice_id": ELEVENLABS_VOICE_ID, "model_id": ELEVENLABS_MODEL, "output_format": ELEVENLABS_OUTPUT_FORMAT}
             if VoiceSettings is not None:
-                kwargs["voice_settings"] = VoiceSettings(
-                    stability=0.55,
-                    similarity_boost=0.85,
-                    style=0.15,
-                    use_speaker_boost=True,
-                    speed=1.0,
-                )
+                kwargs["voice_settings"] = VoiceSettings(stability=0.55, similarity_boost=0.85, style=0.15, use_speaker_boost=True, speed=1.0)
             audio = self.elevenlabs.text_to_speech.convert(**kwargs)
             audio_bytes = audio if isinstance(audio, bytes) else b"".join(chunk for chunk in audio if chunk)
             samples = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -125,7 +114,7 @@ class VoiceEngine:
         except Exception as exc:
             self._elevenlabs_failed = True
             self.elevenlabs = None
-            print(f"[VOICE] ElevenLabs no pudo generar audio; cambiando a TTS local: {exc}")
+            print(f"[VOICE] ElevenLabs falló; cambio a TTS local: {exc}")
             return False
 
     def speak(self, text: str) -> None:
@@ -148,11 +137,7 @@ class VoiceEngine:
     def load_whisper(self) -> None:
         if self.whisper is None:
             print(f"[VOICE] Cargando faster-whisper ({WHISPER_MODEL})...")
-            self.whisper = WhisperModel(
-                WHISPER_MODEL,
-                device=WHISPER_DEVICE,
-                compute_type=WHISPER_COMPUTE_TYPE,
-            )
+            self.whisper = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE)
             print("[VOICE] Whisper listo.")
 
     def record(self, seconds: float = 7.0) -> np.ndarray:
@@ -168,13 +153,7 @@ class VoiceEngine:
         if audio.size == 0:
             return ""
         self.load_whisper()
-        segments, _ = self.whisper.transcribe(
-            audio,
-            language=WHISPER_LANGUAGE,
-            beam_size=3,
-            vad_filter=True,
-            condition_on_previous_text=False,
-        )
+        segments, _ = self.whisper.transcribe(audio, language=WHISPER_LANGUAGE, beam_size=3, vad_filter=True, condition_on_previous_text=False)
         return " ".join(segment.text.strip() for segment in segments).strip()
 
     def listen(self, seconds: float = 7.0) -> str:
