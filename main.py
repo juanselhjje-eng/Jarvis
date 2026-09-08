@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import tkinter as tk
 
 from src.jarvis.agent_protocol import AgentProtocol
 from src.jarvis.brain import JarvisBrain
@@ -32,24 +33,12 @@ class Jarvis:
         self.neural = NeuralLab()
         self.hud: JarvisHUDv5 | None = None
         self._command_lock = threading.Lock()
-        self.computer_agent = ComputerAgent(
-            self.brain,
-            self.tools.computer,
-            self.protocol,
-            self._agent_event,
-            self._agent_observation,
-        )
+        self.computer_agent = ComputerAgent(self.brain, self.tools.computer, self.protocol, self._agent_event, self._agent_observation)
 
     def start(self) -> None:
         available = self.brain.is_available()
-        self.hud = JarvisHUDv5(
-            self.brain,
-            self.voice,
-            self.process_command,
-            self.shutdown,
-            neural=self.neural,
-            stop_mission=self.computer_agent.stop,
-        )
+        self.hud = JarvisHUDv5(self.brain, self.voice, self.process_command, self.shutdown, neural=self.neural, stop_mission=self.computer_agent.stop)
+        self._install_microphone_controls()
         self.hud.update_provider()
         if not available:
             message = "CORE OFFLINE: configura GEMINI_API_KEY o inicia Ollama. La interfaz sigue disponible para diagnóstico."
@@ -59,9 +48,41 @@ class Jarvis:
         else:
             self._hud_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // VISION + COMPUTER USE + OODA + MEMORY + NEURAL LAB")
             self._hud_state("ONLINE")
-            threading.Thread(target=self.voice.speak, args=("JARVIS iniciado. Te escucho.",), daemon=True).start()
-            threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
+            self._set_microphone(False)
+            self._hud_message("VOICE", "Micrófono desactivado. Actívalo con el botón ACTIVAR MICRO.")
         self.hud.run()
+
+    def _install_microphone_controls(self) -> None:
+        if not self.hud:
+            return
+        root = self.hud.root
+        bar = tk.Frame(root, bg="#071018", highlightthickness=1, highlightbackground="#16313d")
+        bar.place(relx=0.5, rely=0.925, anchor="center")
+        tk.Label(bar, text="VOICE INPUT", bg="#071018", fg="#6d8791", font=("Segoe UI", 8, "bold"), padx=10).pack(side="left")
+        self.mic_state = tk.Label(bar, text="MIC OFF", bg="#251017", fg="#ff5f73", font=("Consolas", 8, "bold"), padx=10, pady=5)
+        self.mic_state.pack(side="left", padx=3)
+        self.mic_on_button = tk.Button(bar, text="ACTIVAR MICRO", command=lambda: self._set_microphone(True), bg="#102934", fg="#25d9ff", activebackground="#173844", activeforeground="#e8f6fa", relief="flat", bd=0, font=("Segoe UI", 8, "bold"), cursor="hand2", padx=10, pady=6)
+        self.mic_on_button.pack(side="left", padx=3)
+        self.mic_off_button = tk.Button(bar, text="DESACTIVAR MICRO", command=lambda: self._set_microphone(False), bg="#251017", fg="#ff5f73", activebackground="#3a1820", activeforeground="#e8f6fa", relief="flat", bd=0, font=("Segoe UI", 8, "bold"), cursor="hand2", padx=10, pady=6)
+        self.mic_off_button.pack(side="left", padx=3)
+        self._refresh_microphone_controls()
+
+    def _refresh_microphone_controls(self) -> None:
+        if not self.hud or not hasattr(self, "mic_state"):
+            return
+        enabled = self.voice.microphone_enabled
+        self.mic_state.config(text="MIC ON" if enabled else "MIC OFF", bg="#0b2b25" if enabled else "#251017", fg="#3ee5a1" if enabled else "#ff5f73")
+
+    def _set_microphone(self, enabled: bool) -> None:
+        if enabled:
+            self.voice.enable_microphone()
+            self._hud_state("ESCUCHANDO")
+            self._hud_message("VOICE", "Micrófono ACTIVADO. Solo escucharé cuando esté activado.")
+        else:
+            self.voice.disable_microphone()
+            self._hud_state("STANDBY")
+            self._hud_message("VOICE", "Micrófono DESACTIVADO. JARVIS no capturará voz.")
+        self._refresh_microphone_controls()
 
     def _hud_message(self, sender: str, text: str) -> None:
         if self.hud:
@@ -113,18 +134,8 @@ class Jarvis:
     @staticmethod
     def _needs_visual_agent(command: str) -> bool:
         text = command.lower().strip()
-        # Abrir una aplicación por sí solo sigue siendo una operación determinista.
-        # Computer Use entra cuando el usuario describe una interacción posterior.
-        explicit = (
-            "haz clic", "haz click", "clica", "pulsa", "presiona", "rellena", "selecciona",
-            "busca dentro", "escribe en", "clic en", "interactúa", "interactua", "controla la pantalla",
-            "usa la pantalla", "mira la pantalla", "observa la pantalla", "arrástralo", "arrastra",
-            "desplázate", "desplazate", "automatiza", "dentro de la", "dentro del", "en la aplicación",
-            "en la app", "en la pagina", "en la página", "en la web", "en el sitio", "haz esto en",
-            "hazlo en", "entra y", "ve y", "abre esto y", "abre ",
-        )
+        explicit = ("haz clic", "haz click", "clica", "pulsa", "presiona", "rellena", "selecciona", "busca dentro", "escribe en", "clic en", "interactúa", "interactua", "controla la pantalla", "usa la pantalla", "mira la pantalla", "observa la pantalla", "arrástralo", "arrastra", "desplázate", "desplazate", "automatiza", "dentro de la", "dentro del", "en la aplicación", "en la app", "en la pagina", "en la página", "en la web", "en el sitio", "haz esto en", "hazlo en", "entra y", "ve y", "abre esto y", "abre ")
         if any(marker in text for marker in explicit):
-            # "abre chrome" no necesita visión; "abre chrome y busca X" sí.
             if re.fullmatch(r"(?:abre|abrir|inicia|iniciar|ejecuta|ejecutar|lanza|lanzar)\s+(?:la\s+|el\s+)?(?:aplicación\s+|app\s+)?(?:chrome|google chrome|edge|microsoft edge|firefox|teams|microsoft teams|notepad|bloc de notas|explorer|explorador|calculadora|calculator|settings|configuración|discord|spotify|github|youtube|gmail)", text):
                 return False
             return True
@@ -132,18 +143,11 @@ class Jarvis:
 
     @staticmethod
     def _screen_request(command: str) -> bool:
-        return command.lower().strip() in {
-            "mira la pantalla", "observa la pantalla", "captura la pantalla", "analiza la pantalla",
-            "qué hay en mi pantalla", "que hay en mi pantalla",
-        }
+        return command.lower().strip() in {"mira la pantalla", "observa la pantalla", "captura la pantalla", "analiza la pantalla", "qué hay en mi pantalla", "que hay en mi pantalla"}
 
     @classmethod
     def _open_prefix(cls, command: str) -> str | None:
-        match = re.match(
-            rf"^\s*(?:abre|abrir|inicia|iniciar|entra(?:r)?\s+a)\s+(?:la\s+|el\s+)?(?P<app>{cls.OPENABLE})(?=\s*(?:,|\s+y\s+|\s+para\s+|$))",
-            command,
-            flags=re.IGNORECASE,
-        )
+        match = re.match(rf"^\s*(?:abre|abrir|inicia|iniciar|entra(?:r)?\s+a)\s+(?:la\s+|el\s+)?(?P<app>{cls.OPENABLE})(?=\s*(?:,|\s+y\s+|\s+para\s+|$))", command, flags=re.IGNORECASE)
         return match.group("app") if match else None
 
     def _run_visual_task(self, command: str) -> None:
@@ -186,12 +190,10 @@ class Jarvis:
         if lowered in {"salir", "exit", "quit", "cierrate", "ciérrate", "jarvis apágate", "jarvis apagarte"}:
             self.shutdown()
             return
-
         if self.computer_agent.has_pending and (self._confirmation(command) or self._rejection(command)):
             self._hud_state("EJECUTANDO" if self._confirmation(command) else "VERIFICANDO")
             self.respond(self.computer_agent.confirm(self._confirmation(command)))
             return
-
         if lowered in {"limpiar conversación", "limpia la conversación", "olvida esta conversación"}:
             self.brain.reset_conversation()
             self.respond("Conversación limpiada. La memoria persistente no fue borrada.")
@@ -204,7 +206,6 @@ class Jarvis:
         if lowered in {"qué recuerdas de mí", "que recuerdas de mi", "qué recuerdas", "que recuerdas", "estado de memoria", "estado de mi memoria"}:
             self.respond(self.memory.summary())
             return
-
         neural_markers = ("crea una red neuronal", "crea una red neural", "entrena una red neuronal", "haz una red neuronal", "prueba una red neuronal")
         if any(marker in lowered for marker in neural_markers):
             self._hud_state("APRENDIENDO")
@@ -216,13 +217,11 @@ class Jarvis:
         if lowered in {"estado del neural lab", "estado del aprendizaje", "qué has aprendido", "que has aprendido"}:
             self.respond(self.neural.status() + "\n" + self.memory.summary())
             return
-
         effort = self._effort(command)
         if effort:
             self.reasoning.set_effort(effort)
             self.respond(f"Esfuerzo cognitivo configurado en {effort}.")
             return
-
         provider = self._provider(command)
         if provider:
             try:
@@ -233,7 +232,6 @@ class Jarvis:
             except (ValueError, RuntimeError) as exc:
                 self.respond(str(exc))
             return
-
         if self._screen_request(command):
             self._hud_state("OBSERVANDO")
             observation = self.tools.computer.observe()
@@ -241,7 +239,6 @@ class Jarvis:
             result = self.brain.analyze_screen(observation.image_base64, command) if observation.image_base64 else observation.note
             self.respond(result)
             return
-
         if self._needs_visual_agent(command):
             app = self._open_prefix(command)
             if app:
@@ -255,7 +252,6 @@ class Jarvis:
                     return
             self._run_visual_task(command)
             return
-
         tool_result = self.tools.handle(command)
         if isinstance(tool_result, dict):
             if tool_result.get("provider"):
@@ -283,11 +279,9 @@ class Jarvis:
             if tool_result.get("communication"):
                 self.respond(str(tool_result.get("message", "Acción preparada.")))
                 return
-
         if isinstance(tool_result, str):
             self.respond(tool_result)
             return
-
         self._hud_state("PENSANDO")
         result = self.reasoning.answer(command)
         self.respond(result)
@@ -305,12 +299,14 @@ class Jarvis:
     def run_voice_loop(self) -> None:
         while self.running:
             try:
-                if self.busy:
+                if self.busy or not self.voice.microphone_enabled:
+                    if not self.voice.microphone_enabled:
+                        self._hud_state("STANDBY")
                     time.sleep(0.25)
                     continue
                 self._hud_state("ESCUCHANDO")
                 command = self.voice.listen_for_command(seconds=7)
-                if command and self.running:
+                if command and self.running and self.voice.microphone_enabled:
                     self._hud_message("TÚ", command)
                     self.process_command(command)
             except KeyboardInterrupt:
