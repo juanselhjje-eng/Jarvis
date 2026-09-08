@@ -123,7 +123,6 @@ class Jarvis:
         command = command.strip()
         if not command or not self.running:
             return
-        # Never let network/vision work freeze Tkinter's event loop.
         threading.Thread(target=self._process_command, args=(command,), daemon=True, name="jarvis-command").start()
 
     def _process_command(self, command: str) -> None:
@@ -185,13 +184,17 @@ class Jarvis:
             self.respond(result)
             return
 
-        # Preflight: abre primero la aplicación conocida y después entrega el resto a Computer Use.
         if self._needs_visual_agent(command):
             app = self._open_prefix(command)
             if app:
                 self._hud_message("SYSTEM", f"Preflight: abriendo {app} antes de la misión visual.")
-                self.tools.system.open_application(app)
-                time.sleep(1.0)
+                try:
+                    opened = self.tools.system.open_application(app)
+                    self._hud_message("SYSTEM", str(opened))
+                    time.sleep(1.0)
+                except Exception as exc:
+                    self.respond(f"No pude abrir {app} antes de la misión visual: {exc}")
+                    return
             self._run_visual_task(command)
             return
 
