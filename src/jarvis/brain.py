@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -17,12 +18,18 @@ except ImportError:
 try:
     from google import genai
     from google.genai import types
-except ImportError:
+    _GENAI_IMPORT_ERROR = ""
+except ImportError as exc:
     genai = None
     types = None
+    _GENAI_IMPORT_ERROR = str(exc)
 
+# Carga .env desde la raíz del proyecto, no solamente desde el directorio actual.
+# Esto evita que `py main.py` falle si se ejecuta desde otra carpeta.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _PROJECT_ROOT / ".env"
 if load_dotenv:
-    load_dotenv()
+    load_dotenv(dotenv_path=_ENV_FILE, override=False)
 
 
 SYSTEM_PROMPT = """
@@ -91,16 +98,15 @@ class JarvisBrain:
             return self._gemini
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
-            return None
+            raise RuntimeError(f"GEMINI_API_KEY no fue cargada desde { _ENV_FILE }. Revisa que exista .env y que la variable tenga un valor.")
         if genai is None:
-            raise RuntimeError("Falta instalar google-genai.")
+            detail = f" Detalle de importación: {_GENAI_IMPORT_ERROR}" if _GENAI_IMPORT_ERROR else ""
+            raise RuntimeError(f"google-genai no está disponible en este Python.{detail}")
         self._gemini = genai.Client(api_key=api_key)
         return self._gemini
 
     def _select_working_gemini_model(self) -> str:
         client = self._gemini_client()
-        if client is None:
-            raise RuntimeError("Gemini no está configurado.")
         if self._gemini_model_checked:
             return self.config.gemini_model
         configured = self.config.gemini_model
@@ -130,6 +136,15 @@ class JarvisBrain:
     def gemini_available(self) -> bool:
         return bool(os.getenv("GEMINI_API_KEY", "").strip()) and genai is not None
 
+    def gemini_diagnostic(self) -> str:
+        """Diagnóstico seguro: nunca muestra la clave completa."""
+        key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not key:
+            return f"GEMINI_API_KEY no está cargada. Archivo esperado: {_ENV_FILE}"
+        if genai is None:
+            return f"La API key sí fue detectada, pero google-genai no está disponible. {_GENAI_IMPORT_ERROR}".strip()
+        return f"Gemini configurado correctamente. Modelo solicitado: {self.config.gemini_model}. Clave detectada ({len(key)} caracteres)."
+
     def ollama_available(self) -> bool:
         try:
             response = self.session.get(self.config.ollama_host, timeout=2)
@@ -145,7 +160,7 @@ class JarvisBrain:
         if provider not in {"ollama", "gemini"}:
             raise ValueError("Proveedor no válido. Usa gemini u ollama.")
         if provider == "gemini" and not self.gemini_available():
-            raise RuntimeError("Gemini no está configurado. Añade GEMINI_API_KEY al .env.")
+            raise RuntimeError(self.gemini_diagnostic())
         if provider == "ollama" and not self.ollama_available():
             raise RuntimeError("Ollama no está disponible.")
         self.config.provider = provider
@@ -172,8 +187,6 @@ class JarvisBrain:
 
     def _ask_gemini(self) -> str:
         client = self._gemini_client()
-        if client is None:
-            raise RuntimeError("Gemini no está configurado.")
         model = self._select_working_gemini_model()
         response = client.models.generate_content(
             model=model,
@@ -185,10 +198,10 @@ class JarvisBrain:
         """Analiza una captura puntual y añade memoria relevante al objetivo."""
         if not image_base64:
             return "No recibí una captura válida."
-        client = self._gemini_client()
-        if client is None or types is None:
-            return "La visión requiere Gemini configurado."
         try:
+            client = self._gemini_client()
+            if types is None:
+                return "La visión de Gemini no está disponible en este entorno."
             model = self._select_working_gemini_model()
             image_bytes = base64.b64decode(image_base64)
             prompt = f"{SYSTEM_PROMPT}\n\nMEMORIA RELEVANTE:\n{self._context(task)}\n\nOBJETIVO VISUAL:\n{task}"
