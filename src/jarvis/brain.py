@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from .memory import LocalMemory
+
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -26,23 +28,28 @@ if load_dotenv:
 SYSTEM_PROMPT = """
 Eres J.A.R.V.I.S., un único agente personal para Windows.
 
-Tu trabajo no es solamente conversar: cuando el usuario pide una acción, debes distinguir entre
-responder, usar una herramienta determinista y controlar de forma visible una aplicación o web.
-Nunca inventes que hiciste algo. La pantalla observada y el resultado de una herramienta son la
-fuente de verdad.
+No eres solamente un chatbot. Debes entender la intención del usuario y, cuando corresponde,
+usar herramientas deterministas o controlar una aplicación/web de forma visible. Nunca afirmes
+haber realizado una acción si no existe un resultado verificable.
 
-Para tareas complejas piensa en: objetivo -> criterios -> herramienta -> acción -> observación ->
-corrección -> resultado. No muestres cadena de pensamiento privada; comunica solo decisiones,
-estado y resultados útiles.
+Para tareas complejas trabaja como: objetivo -> plan -> herramienta -> acción -> nueva observación
+-> corrección -> verificación. La pantalla observada y el resultado real de una herramienta son
+la fuente de verdad. No inventes botones, páginas, contactos ni estados.
+
+Cuando el usuario diga "haz esto en esta web", "haz esto en esta aplicación", "entra", "pulsa",
+"escribe", "selecciona", "busca dentro" o describa una secuencia de interfaz, la tarea debe
+tratarse como una misión de Computer Use y ejecutarse mediante la pantalla visible, no como una
+simple respuesta de texto.
+
+APRENDIZAJE: usa la memoria local proporcionada como contexto. Aprende preferencias, instrucciones
+recurrentes y lecciones de tareas anteriores. Si el usuario corrige una forma de trabajar, esa
+corrección puede convertirse en una lección persistente. No inventes recuerdos.
 
 ACCIONES EXTERNAS: antes de enviar mensajes, correos, formularios, publicaciones, compras o
-cambios destructivos, prepara la acción y exige una confirmación explícita del usuario.
+cambios destructivos, prepara la acción y exige confirmación explícita del usuario.
 
-VISIÓN: una captura es puntual y solo debe usarse para la tarea solicitada. No inventes botones,
-texto, contactos o estados que no sean visibles.
-
-MEMORIA: usa memoria local cuando exista contexto útil. Nunca guardes contraseñas, cookies, tokens
-ni claves API.
+VISIÓN: las capturas son puntuales y están ligadas a la misión solicitada. No hagas vigilancia
+continua ni captures credenciales, contraseñas, cookies, tokens o claves API.
 
 HABLA EN ESPAÑOL cuando el usuario hable español.
 """.strip()
@@ -57,20 +64,19 @@ class BrainConfig:
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
     ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
     max_history_messages: int = int(os.getenv("JARVIS_MAX_HISTORY_MESSAGES", "12"))
+    max_memory_items: int = int(os.getenv("JARVIS_MAX_MEMORY_ITEMS", "8"))
 
 
 class JarvisBrain:
-    """Un solo cerebro con Gemini primario y Ollama como alternativa local."""
+    """Un solo cerebro con Gemini primario, Ollama de respaldo y memoria persistente local."""
 
     MODEL_PREFERENCE = (
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
+        "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite",
     )
 
-    def __init__(self, config: BrainConfig | None = None) -> None:
+    def __init__(self, config: BrainConfig | None = None, memory: LocalMemory | None = None) -> None:
         self.config = config or BrainConfig()
+        self.memory = memory or LocalMemory()
         self.conversation: list[dict[str, str]] = []
         self.session = requests.Session()
         self._gemini = None
@@ -97,7 +103,6 @@ class JarvisBrain:
             raise RuntimeError("Gemini no está configurado.")
         if self._gemini_model_checked:
             return self.config.gemini_model
-
         configured = self.config.gemini_model
         try:
             available: list[str] = []
@@ -149,8 +154,21 @@ class JarvisBrain:
     def reset_conversation(self) -> None:
         self.conversation.clear()
 
+    def remember(self, text: str, category: str = "fact") -> None:
+        self.memory.remember(text, category=category)
+
+    def learn(self, lesson: str, context: str = "") -> None:
+        self.memory.learn(lesson, context=context)
+
+    def memory_summary(self) -> str:
+        return self.memory.summary()
+
     def _history_text(self) -> str:
         return "\n".join(f"{'Usuario' if m['role'] == 'user' else 'J.A.R.V.I.S.'}: {m['content']}" for m in self.conversation)
+
+    def _context(self, request: str = "") -> str:
+        recalled = self.memory.recall(request, limit=self.config.max_memory_items)
+        return recalled or "Sin recuerdos relevantes para esta solicitud."
 
     def _ask_gemini(self) -> str:
         client = self._gemini_client()
@@ -159,12 +177,12 @@ class JarvisBrain:
         model = self._select_working_gemini_model()
         response = client.models.generate_content(
             model=model,
-            contents=f"{SYSTEM_PROMPT}\n\nHISTORIAL:\n{self._history_text()}",
+            contents=f"{SYSTEM_PROMPT}\n\nMEMORIA RELEVANTE:\n{self._context(self.conversation[-1]['content'] if self.conversation else '')}\n\nHISTORIAL:\n{self._history_text()}",
         )
         return str(getattr(response, "text", "") or "").strip()
 
     def analyze_screen(self, image_base64: str, task: str = "Analiza la pantalla.") -> str:
-        """Analiza una captura puntual. No activa captura continua."""
+        """Analiza una captura puntual y añade memoria relevante al objetivo."""
         if not image_base64:
             return "No recibí una captura válida."
         client = self._gemini_client()
@@ -173,21 +191,23 @@ class JarvisBrain:
         try:
             model = self._select_working_gemini_model()
             image_bytes = base64.b64decode(image_base64)
+            prompt = f"{SYSTEM_PROMPT}\n\nMEMORIA RELEVANTE:\n{self._context(task)}\n\nOBJETIVO VISUAL:\n{task}"
             response = client.models.generate_content(
                 model=model,
-                contents=[
-                    types.Part.from_text(text=task),
-                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                ],
+                contents=[types.Part.from_text(text=prompt), types.Part.from_bytes(data=image_bytes, mime_type="image/png")],
             )
             return str(getattr(response, "text", "") or "No pude interpretar la captura.").strip()
         except Exception as exc:
             return f"No pude analizar la pantalla con Gemini: {exc}"
 
     def _ask_ollama(self) -> str:
+        memory = self._context(self.conversation[-1]["content"] if self.conversation else "")
         payload = {
             "model": self.config.ollama_model,
-            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *self.conversation],
+            "messages": [
+                {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nMEMORIA RELEVANTE:\n{memory}"},
+                *self.conversation,
+            ],
             "stream": False,
             "keep_alive": self.config.ollama_keep_alive,
             "options": {"temperature": 0.2},
