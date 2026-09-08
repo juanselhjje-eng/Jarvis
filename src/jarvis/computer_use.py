@@ -70,12 +70,31 @@ class ComputerUse:
         pyautogui.click(int(x), int(y), button=button)
         return f"Clic {button} en ({int(x)}, {int(y)})."
 
+    def double_click(self, x: int, y: int) -> str:
+        if not self.enabled:
+            return "Control visual no disponible: instala pyautogui."
+        pyautogui.doubleClick(int(x), int(y), interval=0.10)
+        return f"Doble clic en ({int(x)}, {int(y)})."
+
+    def scroll(self, amount: int) -> str:
+        if not self.enabled:
+            return "Control visual no disponible: instala pyautogui."
+        amount = max(-12, min(12, int(amount)))
+        pyautogui.scroll(amount)
+        return f"Desplazamiento: {amount}."
+
+    def drag(self, x1: int, y1: int, x2: int, y2: int, duration: float = 0.35) -> str:
+        if not self.enabled:
+            return "Control visual no disponible: instala pyautogui."
+        pyautogui.moveTo(int(x1), int(y1), duration=0.10)
+        pyautogui.dragTo(int(x2), int(y2), duration=max(0.15, min(2.0, float(duration))), button="left")
+        return f"Arrastre desde ({x1}, {y1}) hasta ({x2}, {y2})."
+
     def type_text(self, text: str) -> str:
         if not self.enabled:
             return "Control visual no disponible: instala pyautogui."
         if not text:
             return "No había texto para escribir."
-        # Clipboard paste handles Spanish accents and Unicode better than pyautogui.write.
         if pyperclip is not None and any(ord(char) > 127 for char in text):
             pyperclip.copy(text)
             pyautogui.hotkey("ctrl", "v")
