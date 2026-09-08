@@ -1,86 +1,90 @@
-# J.A.R.V.I.S. BETA 0.2
+# J.A.R.V.I.S. — Mission Control
 
-Asistente personal para Windows, local-first, con **un solo agente de IA**. Puedes hablarle de forma natural; no necesitas aprender comandos.
+Asistente personal para Windows con **un solo agente**, Gemini como cerebro principal y Ollama como alternativa local.
 
-## Cómo funciona
+La diferencia importante es que JARVIS no se limita a contestar: puede observar puntualmente la pantalla y ejecutar acciones visibles dentro de aplicaciones y páginas mediante un ciclo acotado **OBSERVE → DECIDE → ACT → OBSERVE**.
 
-```text
-Tu voz o texto
-      ↓
-   JARVIS
-      ↓
- JarvisBrain
- ┌────┴────┐
-Ollama   Claude
-      ↓
-Herramientas deterministas
-      ↓
-Acción real / resultado
-      ↓
-Respuesta + voz
-```
-
-Ollama y Claude son **proveedores del mismo cerebro**, no agentes diferentes.
-
-## Estructura
+## Arquitectura
 
 ```text
-Jarvis/
-├── src/jarvis/          # Código principal
-│   ├── main.py
-│   ├── brain.py
-│   ├── command_router.py
-│   ├── voice_engine.py
-│   ├── hud.py
-│   └── memory.py
-├── data/                # Datos locales generados por JARVIS
-├── scripts/             # Lanzadores y utilidades
-├── .github/             # CI de GitHub
-├── .env.example
-├── requirements.txt
-├── main.py              # Punto de entrada simple
-└── README.md
+Voz / texto
+    ↓
+JARVIS Brain
+    ├── Gemini
+    └── Ollama
+    ↓
+Intent / herramienta
+    ├── herramientas Windows
+    ├── navegador y servicios
+    ├── Teams
+    └── Computer Use
+             ↓
+      captura puntual
+             ↓
+        visión Gemini
+             ↓
+        acción visible
+             ↓
+        nueva captura
+             ↓
+         resultado
 ```
 
-El código de ejecución vive dentro de `src/jarvis`. La raíz conserva únicamente los archivos de configuración, documentación y el lanzador principal para que el proyecto sea fácil de usar.
+La pantalla es la fuente de verdad para Computer Use. JARVIS no usa registro oculto de teclas ni vigilancia continua.
 
-## Ejemplos de órdenes
+## Computer Use
 
-- `Jarvis, abre Google.`
-- `Jarvis, abre Gmail.`
-- `Jarvis, usa Claude.`
-- `Jarvis, usa Ollama.`
-- `Jarvis, busca información sobre la fotosíntesis.`
-- `Jarvis, recuerda que mañana tengo que entregar sociales.`
-- `Jarvis, ¿qué recuerdas?`
-- `Jarvis, revisa mi PC.`
-- `Jarvis, abre Teams.`
+Puedes dar órdenes naturales como:
 
-Las acciones sensibles, como enviar mensajes, deben tener confirmación explícita antes de ejecutarse. Las integraciones de Gmail/Teams todavía no están implementadas como automatización completa.
+- `abre Teams personal`
+- `abre Teams y busca a Majo`
+- `abre Google y busca noticias de tecnología`
+- `entra a esta web y pulsa el botón que dice continuar`
+- `abre la aplicación y rellena el formulario`
+- `haz esto dentro de la aplicación`
+- `mira la pantalla y dime qué aparece`
+
+Para una tarea visual, el agente puede realizar hasta un número limitado de ciclos. Si no puede identificar con seguridad un elemento, se detiene en lugar de hacer clic a ciegas.
+
+Las acciones externas —enviar mensajes, correos, publicar, comprar o acciones destructivas— quedan detrás de confirmación humana.
+
+## Teams
+
+`Teams` personal es el comportamiento predeterminado. Las palabras `educativo`, `colegio`, `escuela` o `institucional` seleccionan Teams educativo.
+
+Ejemplo:
+
+```text
+entra a Teams personal, busca a Majo G y escríbele hola
+```
+
+JARVIS prepara el mensaje y espera una confirmación antes de enviarlo.
+
+## Visión
+
+```text
+mira la pantalla
+```
+
+captura una imagen puntual y la analiza con Gemini. La captura no se realiza continuamente.
 
 ## Voz
 
-### Entrada
+`faster-whisper` procesa la entrada localmente. `pyttsx3` funciona como salida de voz local. ElevenLabs queda como opción, no como requisito.
 
-`faster-whisper` funciona localmente para convertir tu voz en texto. Las palabras de activación por defecto son `Jarvis` y `Viernes`.
+## Gemini
 
-### Salida
-
-La voz principal usa **ElevenLabs**. Si no está configurado o la API falla, JARVIS intenta utilizar `pyttsx3` como respaldo local.
-
-La configuración está en `.env`:
+Configura `.env`:
 
 ```env
-JARVIS_TTS=elevenlabs
-ELEVENLABS_API_KEY=tu_clave
-ELEVENLABS_VOICE_ID=W5JElH3dK1UYYAiHH7uh
-ELEVENLABS_MODEL=eleven_multilingual_v2
-ELEVENLABS_OUTPUT_FORMAT=pcm_22050
+JARVIS_PROVIDER=gemini
+GEMINI_API_KEY=tu_clave
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
-## Ollama
+JARVIS consulta los modelos disponibles para la clave y evita depender de un modelo antiguo que ya no exista.
 
-Instala Ollama en Windows y deja el servicio local disponible. Después descarga el modelo configurado, por ejemplo `llama3.2`.
+## Ollama
 
 ```env
 JARVIS_PROVIDER=ollama
@@ -88,45 +92,53 @@ OLLAMA_HOST=http://127.0.0.1:11434
 OLLAMA_MODEL=llama3.2
 ```
 
-## Claude
-
-Claude es opcional. Guarda la API key solamente en `.env`:
-
-```env
-ANTHROPIC_API_KEY=tu_clave
-CLAUDE_MODEL=claude-sonnet-4-6
-```
-
-Nunca subas `.env`, claves, cookies, sesiones de navegador o memoria privada al repositorio.
+Ollama funciona como proveedor local del mismo agente, no como otro agente.
 
 ## Instalación
 
 ```bat
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Copia `.env.example` como `.env` y configura los proveedores que quieras usar.
+Copia `.env.example` a `.env` y completa la clave de Gemini si vas a usar Gemini.
 
-## Ejecutar
+## Ejecutar en Windows
 
 ```bat
-python main.py
+cd C:\Users\juans\Desktop\Jarvis-main
+py main.py
 ```
 
-También puedes ejecutar `scripts\\START_JARVIS.bat` desde la raíz del proyecto.
+No uses `py mainpy`: el archivo se llama `main.py`.
 
-## Arquitectura
+## Estructura principal
 
-- `src/jarvis/main.py` — runtime principal.
-- `src/jarvis/brain.py` — único cerebro y proveedores Ollama/Claude.
-- `src/jarvis/command_router.py` — herramientas deterministas e intenciones simples.
-- `src/jarvis/voice_engine.py` — reconocimiento local y TTS de ElevenLabs con respaldo local.
-- `src/jarvis/memory.py` — memoria persistente local en `data/memory.json`.
-- `src/jarvis/hud.py` — interfaz gráfica futurista basada en Tkinter.
-- `main.py` — punto de entrada compatible y sencillo.
+```text
+src/jarvis/
+├── brain.py              # Gemini/Ollama + visión
+├── computer_use.py       # mouse, teclado y capturas visibles
+├── computer_agent.py     # OODA visual para actuar dentro de apps/webs
+├── command_router.py     # herramientas deterministas
+├── agent_protocol.py     # confirmaciones y límites
+├── agent_orchestrator.py # planificación
+├── reasoning_layer.py    # esfuerzo y verificación
+├── task_planner.py       # planes de tareas
+├── teams_automation.py   # Teams visible
+├── voice_engine.py       # voz
+├── memory.py             # memoria local
+└── hud_v4.py             # Mission Control Tkinter
+```
+
+## Inspiración
+
+La arquitectura toma ideas generales de asistentes agentic: pipeline de herramientas, visión, memoria, rutinas, auditoría, aprobaciones y una interfaz Mission Control. No se copian código, assets ni texto propietario de terceros.
+
+La referencia de Jarvis AI Assistant destaca precisamente un flujo de intención → herramientas → progreso → aprobación → resultado, además de Computer Use, navegador, memoria y rutinas. citeturn0view0
+
+El proyecto clásico de Jarvis para Linux también sirve como referencia histórica de un asistente Python orientado a ejecutar tareas del PC y ampliar funcionalidades mediante módulos. citeturn1view0
 
 ## Seguridad
 
-JARVIS no debe realizar vigilancia oculta ni registrar teclas de forma encubierta. Las automatizaciones de correo, mensajería y cambios importantes deben verificarse antes de confirmar una acción irreversible.
+No se implementa vigilancia oculta, captura de credenciales, registro de teclas ni ejecución de shell arbitrario generado por el modelo. Las acciones externas y destructivas requieren aprobación explícita.
