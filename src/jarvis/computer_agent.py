@@ -18,23 +18,30 @@ class ComputerAction:
     text: str = ""
     keys: list[str] | None = None
     button: str = "left"
+    target: str = ""
     reason: str = ""
 
 
 class ComputerAgent:
-    """Agente visual acotado: observa la pantalla, decide una acción y vuelve a observar.
+    """Controlador visual OODA para tareas dentro de aplicaciones y webs.
 
-    No registra teclas ni ejecuta shell. Las acciones de comunicación o destructivas
-    se detienen antes de ejecutarse y requieren confirmación explícita.
+    Trabaja sobre la interfaz visible: captura -> decide una acción -> ejecuta ->
+    vuelve a capturar. No registra pulsaciones, no extrae credenciales y no ejecuta
+    shell arbitrario. Las acciones externas/destructivas pasan por una compuerta
+    de confirmación y pueden reanudarse con una confirmación posterior.
     """
 
     ACTIONS = {"click", "move", "type", "hotkey", "wait", "done", "ask_confirmation"}
+    CONFIRM_WORDS = {"sí", "si", "envíalo", "envialo", "envia", "envía", "hazlo", "confirmo", "dale", "adelante", "procede", "proceder", "mándalo", "mandalo"}
+    REJECT_WORDS = {"no", "cancela", "cancelar", "detente", "para", "parar"}
 
     def __init__(self, brain, computer: ComputerUse, protocol: AgentProtocol, event: Callable[[str], None] | None = None) -> None:
         self.brain = brain
         self.computer = computer
         self.protocol = protocol
         self.event = event or (lambda _message: None)
+        self.pending_task: str | None = None
+        self.pending_reason: str = ""
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any] | None:
@@ -47,19 +54,21 @@ class ComputerAgent:
         except json.JSONDecodeError:
             return None
 
-    def _decide(self, task: str, image_base64: str, history: list[str]) -> ComputerAction | None:
-        prompt = f"""Actúa como controlador visual de Windows. Tienes una captura de pantalla y una tarea del usuario.
-No muestres razonamiento. Devuelve SOLO JSON válido con esta forma:
-{{"action":"click|move|type|hotkey|wait|done|ask_confirmation","x":0,"y":0,"text":"","keys":[],"button":"left","reason":"breve"}}
-Reglas:
-- Usa coordenadas de la imagen, no inventes coordenadas.
-- Ejecuta una sola acción por ciclo.
-- Si la tarea ya terminó, usa done.
-- Si para terminar habría que enviar/publicar/comprar/eliminar algo, usa ask_confirmation antes de hacerlo.
-- Para escribir texto normal usa type. Para teclas usa hotkey.
-- No pidas credenciales ni copies contraseñas.
+    def _decide(self, task: str, image_base64: str, history: list[str], approval_granted: bool) -> ComputerAction | None:
+        prompt = f"""Actúa como controlador visual de Windows. Tienes una captura actual y una tarea del usuario.
+Devuelve SOLO JSON válido:
+{{"action":"click|move|type|hotkey|wait|done|ask_confirmation","x":0,"y":0,"text":"","keys":[],"button":"left","target":"texto visible del objetivo","reason":"breve"}}
+Reglas estrictas:
+- Usa coordenadas de la captura; nunca inventes coordenadas.
+- Una acción por ciclo y después vuelve a observar.
+- target debe describir el control visible que vas a tocar/escribir.
+- Si necesitas enviar, publicar, comprar, confirmar una operación externa, eliminar datos o realizar una acción irreversible, usa ask_confirmation ANTES de esa acción.
+- Si approval_granted=true, puedes ejecutar la acción externa que acabas de pedir confirmar, pero no inventes una acción diferente.
+- No pidas ni copies contraseñas, códigos de autenticación, cookies o claves.
+- No ejecutes comandos de terminal.
 TAREA: {task}
-ACCIONES PREVIAS: {history[-6:]}
+APROBACIÓN EXPLÍCITA: {approval_granted}
+ACCIONES PREVIAS: {history[-8:]}
 """
         try:
             response = self.brain.analyze_screen(image_base64, prompt)
@@ -76,13 +85,20 @@ ACCIONES PREVIAS: {history[-6:]}
                 text=str(data.get("text", "")),
                 keys=[str(k) for k in (data.get("keys") or [])],
                 button=str(data.get("button", "left")),
+                target=str(data.get("target", "")),
                 reason=str(data.get("reason", "")),
             )
         except Exception as exc:
             self.event(f"VISION ERROR: {exc}")
             return None
 
-    def run(self, task: str, max_steps: int = 10) -> str:
+    def _needs_confirmation(self, task: str, action: ComputerAction) -> bool:
+        if action.action == "ask_confirmation":
+            return True
+        risk_text = f"{task} {action.target} {action.text}".lower()
+        return self.protocol.classify(risk_text).risk == RiskLevel.CONFIRM
+
+    def run(self, task: str, max_steps: int = 12, approval_granted: bool = False) -> str:
         task = task.strip()
         if not task:
             return "No recibí una tarea visual."
@@ -92,15 +108,21 @@ ACCIONES PREVIAS: {history[-6:]}
             if not observation.image_base64:
                 return observation.note
             self.event(f"OODA {step}/{max_steps} • OBSERVE {observation.width}x{observation.height}")
-            action = self._decide(task, observation.image_base64, history)
+            action = self._decide(task, observation.image_base64, history, approval_granted)
             if action is None:
-                return "No pude obtener una acción visual válida. La tarea quedó detenida para evitar un clic a ciegas."
-            policy = self.protocol.classify(action.action + " " + action.text)
-            if action.action == "ask_confirmation" or policy.risk == RiskLevel.CONFIRM:
-                return f"CONFIRMACIÓN NECESARIA: {action.reason or 'la siguiente acción afecta un servicio externo.'}"
-            self.event(f"OODA {step}/{max_steps} • ACT {action.action} {action.reason}".strip())
+                return "La decisión visual no fue válida. Detuve la misión para evitar un clic a ciegas."
+
+            if self._needs_confirmation(task, action) and not approval_granted:
+                self.pending_task = task
+                self.pending_reason = action.reason or action.target or "acción externa"
+                self.event(f"HUMAN GATE • {self.pending_reason}")
+                return f"CONFIRMACIÓN NECESARIA: {self.pending_reason}. Di 'sí, envíalo' para continuar o 'no' para cancelar."
+
+            self.event(f"OODA {step}/{max_steps} • ACT {action.action} {action.target or action.reason}".strip())
             if action.action == "done":
-                return action.reason or "Tarea completada."
+                self.pending_task = None
+                self.pending_reason = ""
+                return action.reason or "Tarea completada y verificada."
             if action.action == "click" and action.x is not None and action.y is not None:
                 result = self.computer.click(action.x, action.y, action.button)
             elif action.action == "move" and action.x is not None and action.y is not None:
@@ -112,9 +134,29 @@ ACCIONES PREVIAS: {history[-6:]}
             elif action.action == "wait":
                 time.sleep(min(3.0, max(0.2, float(action.text or 1))))
                 result = "Esperé y volveré a observar."
+            elif action.action == "ask_confirmation":
+                self.pending_task = task
+                self.pending_reason = action.reason or action.target or "acción externa"
+                return f"CONFIRMACIÓN NECESARIA: {self.pending_reason}. Di 'sí, envíalo' para continuar o 'no' para cancelar."
             else:
                 return "Acción visual no soportada."
-            history.append(f"{action.action}: {result}")
+            history.append(f"{action.action} [{action.target}]: {result}")
             self.event(f"OODA {step}/{max_steps} • RESULT {result}")
             time.sleep(0.25)
         return "Alcancé el límite de ciclos visuales sin confirmar que la tarea terminara."
+
+    def confirm(self, accepted: bool) -> str:
+        task = self.pending_task
+        self.pending_task = None
+        reason = self.pending_reason
+        self.pending_reason = ""
+        if not accepted:
+            return "Misión cancelada. No ejecuté la acción pendiente."
+        if not task:
+            return "No hay ninguna acción visual pendiente de confirmación."
+        self.event(f"HUMAN GATE • APPROVED • {reason}")
+        return self.run(task, max_steps=8, approval_granted=True)
+
+    @property
+    def has_pending(self) -> bool:
+        return bool(self.pending_task)
