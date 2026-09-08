@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .agent_protocol import AgentProtocol, RiskLevel
 from .computer_use import ComputerUse, ScreenObservation
+from .neural_lab import NeuralLab
 
 
 @dataclass
@@ -29,8 +30,9 @@ class ComputerAction:
 class ComputerAgent:
     """Agente visual OODA para controlar el escritorio de forma visible.
 
-    Cada ciclo observa, decide una sola acción, la ejecuta y vuelve a observar.
-    La misión puede detenerse inmediatamente desde la interfaz.
+    Cada ciclo observa, decide una sola acción, la ejecuta y vuelve a observar. Además,
+    la observación alimenta un grafo neuronal visual local para que el laboratorio pueda
+    representar cómo cambia la pantalla durante la misión.
     """
 
     ACTIONS = {"click", "double_click", "move", "scroll", "drag", "type", "hotkey", "wait", "done", "ask_confirmation"}
@@ -48,6 +50,7 @@ class ComputerAgent:
         self.protocol = protocol
         self.event = event or (lambda _message: None)
         self.observation_callback = observation or (lambda _observation: None)
+        self.neural_lab = NeuralLab()
         self.pending_task: str | None = None
         self.pending_reason: str = ""
         self._stop_event = threading.Event()
@@ -114,6 +117,17 @@ ACCIONES PREVIAS: {history[-8:]}
         risk_text = f"{task} {action.target} {action.text}".lower()
         return self.protocol.classify(risk_text).risk == RiskLevel.CONFIRM
 
+    def _observe_and_learn(self, task: str) -> ScreenObservation:
+        observation = self.computer.observe()
+        self.observation_callback(observation)
+        if observation.image_base64:
+            try:
+                graph = self.neural_lab.observe_screen(observation.image_base64, observation.width, observation.height, task)
+                self.event(f"NEURAL VISION • {graph['nodes']} nodos / {graph['edges']} conexiones")
+            except Exception as exc:
+                self.event(f"NEURAL LAB • no se pudo actualizar la topología visual: {exc}")
+        return observation
+
     def run(self, task: str, max_steps: int = 12, approval_granted: bool = False) -> str:
         task = task.strip()
         if not task:
@@ -126,8 +140,7 @@ ACCIONES PREVIAS: {history[-8:]}
                 if self._stop_event.is_set():
                     return "Misión detenida por el usuario."
 
-                observation = self.computer.observe()
-                self.observation_callback(observation)
+                observation = self._observe_and_learn(task)
                 if not observation.image_base64:
                     return observation.note
                 self.event(f"OODA {step}/{max_steps} • OBSERVE {observation.width}x{observation.height}")
