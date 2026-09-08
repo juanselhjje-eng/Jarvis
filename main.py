@@ -15,7 +15,7 @@ from src.jarvis.voice_engine import VoiceEngine
 
 
 class Jarvis:
-    """Runtime único de JARVIS: cerebro + planificación + Computer Use + aprendizaje local."""
+    """Runtime único: cerebro, herramientas, visión, Computer Use, memoria y aprendizaje."""
 
     OPENABLE = r"chrome|google chrome|edge|microsoft edge|firefox|teams|microsoft teams|notepad|bloc de notas|explorer|explorador|calculadora|calculator|settings|configuración|discord|spotify|github|youtube|gmail"
 
@@ -30,19 +30,38 @@ class Jarvis:
         self.neural = NeuralLab()
         self.hud: JarvisHUDv5 | None = None
         self._command_lock = threading.Lock()
-        self.computer_agent = ComputerAgent(self.brain, self.tools.computer, self.protocol, self._agent_event)
+        self.computer_agent = ComputerAgent(
+            self.brain,
+            self.tools.computer,
+            self.protocol,
+            self._agent_event,
+            self._agent_observation,
+        )
 
     def start(self) -> None:
-        if not self.brain.is_available():
-            message = "No hay cerebro disponible. Revisa GEMINI_API_KEY o inicia Ollama."
+        # La UI siempre arranca aunque el proveedor de IA esté temporalmente caído.
+        # Esto evita que un fallo de Gemini/Ollama deje a JARVIS sin interfaz de diagnóstico.
+        available = self.brain.is_available()
+        self.hud = JarvisHUDv5(
+            self.brain,
+            self.voice,
+            self.process_command,
+            self.shutdown,
+            neural=self.neural,
+            stop_mission=self.computer_agent.stop,
+        )
+        self.hud.update_provider()
+
+        if not available:
+            message = "CORE OFFLINE: configura GEMINI_API_KEY o inicia Ollama. La interfaz sigue disponible para diagnóstico."
             print(f"[ERROR] {message}")
-            self.voice.speak(message)
-            return
-        self.hud = JarvisHUDv5(self.brain, self.voice, self.process_command, self.shutdown, neural=self.neural)
-        self._hud_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // COMPUTER USE + OODA + NEURAL LAB")
-        self._hud_state("ONLINE")
-        threading.Thread(target=self.voice.speak, args=("JARVIS iniciado. Te escucho.",), daemon=True).start()
-        threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
+            self._hud_message("SYSTEM", message)
+            self._hud_state("ERROR")
+        else:
+            self._hud_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // VISION + COMPUTER USE + OODA + NEURAL LAB")
+            self._hud_state("ONLINE")
+            threading.Thread(target=self.voice.speak, args=("JARVIS iniciado. Te escucho.",), daemon=True).start()
+            threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
         self.hud.run()
 
     def _hud_message(self, sender: str, text: str) -> None:
@@ -64,6 +83,14 @@ class Jarvis:
         self._hud_message("AGENT", message)
         if self.hud and "HUMAN GATE" in message:
             self._hud_state("VERIFICANDO")
+
+    def _agent_observation(self, observation) -> None:
+        # El último frame de cada ciclo OODA se muestra en el HUD; no se almacena como vigilancia continua.
+        if self.hud:
+            try:
+                self.hud.show_screen(observation.image_base64, observation.width, observation.height)
+            except Exception:
+                pass
 
     @staticmethod
     def _effort(command: str) -> str | None:
@@ -91,8 +118,10 @@ class Jarvis:
         markers = (
             "dentro de", "dentro del", "en la aplicación", "en la app", "en la pagina", "en la página",
             "en la web", "en el sitio", "haz clic", "haz click", "clica", "pulsa", "presiona",
-            "rellena", "escribe en", "selecciona", "busca dentro", "abre esto y", "entra y", "ve y",
-            "hazlo en", "házlo en", "automatiza", "automatiza esto", "haz esto en", "clic en",
+            "rellena", "escribe en", "selecciona", "busca dentro", "abre esto y", "abre " ,
+            "entra y", "ve y", "hazlo en", "házlo en", "automatiza", "haz esto en", "clic en",
+            "interactúa", "interactua", "controla la pantalla", "usa la pantalla", "mira la pantalla",
+            "observa la pantalla", "arrástralo", "arrastra", "desplázate", "desplazate",
         )
         return any(marker in text for marker in markers)
 
@@ -105,7 +134,11 @@ class Jarvis:
 
     @classmethod
     def _open_prefix(cls, command: str) -> str | None:
-        match = re.match(rf"^\s*(?:abre|abrir|inicia|iniciar|entra(?:r)?\s+a)\s+(?:la\s+|el\s+)?(?P<app>{cls.OPENABLE})(?=\s*(?:,|\s+y\s+|\s+para\s+|$))", command, flags=re.IGNORECASE)
+        match = re.match(
+            rf"^\s*(?:abre|abrir|inicia|iniciar|entra(?:r)?\s+a)\s+(?:la\s+|el\s+)?(?P<app>{cls.OPENABLE})(?=\s*(?:,|\s+y\s+|\s+para\s+|$))",
+            command,
+            flags=re.IGNORECASE,
+        )
         return match.group("app") if match else None
 
     def _run_visual_task(self, command: str) -> None:
@@ -130,6 +163,10 @@ class Jarvis:
             self.busy = True
             try:
                 self._process_command_locked(command)
+            except Exception as exc:
+                print(f"[RUNTIME] Error no controlado: {exc}")
+                self._hud_state("ERROR")
+                self.respond(f"Error controlado en la misión: {exc}")
             finally:
                 self.busy = False
 
@@ -180,6 +217,7 @@ class Jarvis:
         if self._screen_request(command):
             self._hud_state("OBSERVANDO")
             observation = self.tools.computer.observe()
+            self._agent_observation(observation)
             result = self.brain.analyze_screen(observation.image_base64, command) if observation.image_base64 else observation.note
             self.respond(result)
             return
