@@ -12,11 +12,7 @@ MEMORY_FILE = DATA_DIR / "memory.json"
 
 
 class LocalMemory:
-    """Memoria persistente local con hechos, preferencias, lecciones y contexto de tareas.
-
-    Solo guarda texto que JARVIS decide conservar para mejorar futuras tareas. Nunca se usa
-    para almacenar contraseñas, cookies, tokens, claves API ni capturas de pantalla.
-    """
+    """Memoria persistente local con hechos, preferencias, lecciones y contexto de tareas."""
 
     def __init__(self, path: Path = MEMORY_FILE) -> None:
         self.path = path
@@ -34,6 +30,10 @@ class LocalMemory:
             data.setdefault("preferences", {})
             data.setdefault("lessons", [])
             data.setdefault("tasks", [])
+            # Compatibilidad con la memoria antigua que guardaba una sola "nota".
+            legacy = data.get("nota")
+            if legacy and str(legacy) not in data["facts"]:
+                data["facts"].append(str(legacy))
             return data
         except (OSError, json.JSONDecodeError):
             return {"facts": [], "preferences": {}, "lessons": [], "tasks": []}
@@ -55,7 +55,14 @@ class LocalMemory:
     def set(self, key: str, value: Any) -> None:
         with self._lock:
             data = self._load()
-            data[key] = value
+            if key == "nota":
+                text = self._safe_text(value)
+                if text and text not in data["facts"]:
+                    data["facts"].append(text)
+                    data["facts"] = data["facts"][-100:]
+                data["nota"] = text
+            else:
+                data[key] = value
             self._save(data)
 
     def remember(self, text: str, category: str = "fact") -> None:
@@ -83,8 +90,7 @@ class LocalMemory:
             data = self._load()
             lessons: list[dict[str, Any]] = data["lessons"]
             record = {"lesson": lesson, "context": context, "time": int(time.time())}
-            # Evita acumular exactamente la misma lección.
-            if not any(item.get("lesson") == lesson for item in lessons):
+            if not any(item.get("lesson") == lesson and item.get("context") == context for item in lessons):
                 lessons.append(record)
             data["lessons"] = lessons[-100:]
             self._save(data)
@@ -106,10 +112,7 @@ class LocalMemory:
         return {token for token in re.findall(r"[a-záéíóúüñ0-9]{3,}", text.lower()) if token not in {"para", "esta", "este", "hacer", "como"}}
 
     def recall(self, query: str, limit: int = 8) -> str:
-        """Recupera memoria relevante por coincidencia semántica ligera de palabras.
-
-        No requiere una base vectorial ni envía la memoria fuera del PC.
-        """
+        """Recupera memoria relevante con una búsqueda local ligera."""
         q = self._tokens(query)
         with self._lock:
             data = self._load()
@@ -139,12 +142,7 @@ class LocalMemory:
     def summary(self) -> str:
         with self._lock:
             data = self._load()
-        return (
-            f"MEMORIA LOCAL: {len(data.get('facts', []))} hechos, "
-            f"{len(data.get('preferences', {}))} preferencias, "
-            f"{len(data.get('lessons', []))} lecciones, "
-            f"{len(data.get('tasks', []))} tareas registradas."
-        )
+        return f"MEMORIA LOCAL: {len(data.get('facts', []))} hechos, {len(data.get('preferences', {}))} preferencias, {len(data.get('lessons', []))} lecciones, {len(data.get('tasks', []))} tareas registradas."
 
     def clear(self) -> None:
         with self._lock:
