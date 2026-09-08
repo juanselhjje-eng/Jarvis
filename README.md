@@ -1,144 +1,134 @@
-# J.A.R.V.I.S. — Mission Control
+# J.A.R.V.I.S.
 
-Asistente personal para Windows con **un solo agente**, Gemini como cerebro principal y Ollama como alternativa local.
+J.A.R.V.I.S. es un agente de escritorio para Windows construido en Python. La arquitectura actual está enfocada en **Computer Use visible**, planificación, memoria local, voz, Gemini/Ollama y un laboratorio separado para aprendizaje neuronal.
 
-La diferencia importante es que JARVIS no se limita a contestar: puede observar puntualmente la pantalla y ejecutar acciones visibles dentro de aplicaciones y páginas mediante un ciclo acotado **OBSERVE → DECIDE → ACT → OBSERVE**.
+> No es una promesa de una IA que literalmente pueda hacer cualquier cosa. El objetivo es darle una interfaz de herramientas amplia para operar el computador de forma visible y verificable, manteniendo límites claros para acciones externas o destructivas.
 
 ## Arquitectura
 
 ```text
-Voz / texto
-    ↓
-JARVIS Brain
-    ├── Gemini
-    └── Ollama
-    ↓
-Intent / herramienta
-    ├── herramientas Windows
-    ├── navegador y servicios
-    ├── Teams
-    └── Computer Use
-             ↓
-      captura puntual
-             ↓
-        visión Gemini
-             ↓
-        acción visible
-             ↓
-        nueva captura
-             ↓
-         resultado
+USUARIO / VOZ / HUD
+        │
+        ▼
+┌───────────────────────┐
+│       CORE AGENT      │  Gemini → Ollama fallback
+└───────────┬───────────┘
+            │
+     INTENT / PLAN / POLICY
+            │
+     ┌──────┴────────┐
+     ▼               ▼
+DETERMINISTIC     COMPUTER USE
+TOOLS             OBSERVE → DECIDE → ACT → VERIFY
+     │               │
+     └──────┬────────┘
+            ▼
+      RESULT / MEMORY
+            │
+            ▼
+       MISSION CONTROL
+
+Neural Lab queda aislado del runtime:
+DATA → MLP → TRAIN → EVALUATE → SAVE
 ```
 
-La pantalla es la fuente de verdad para Computer Use. JARVIS no usa registro oculto de teclas ni vigilancia continua.
+## Capacidades actuales
 
-## Computer Use
+- **Gemini como cerebro principal** y **Ollama como fallback/local**.
+- Descubrimiento de modelos Gemini compatibles en lugar de asumir que un modelo antiguo existe. La API de Gemini permite enumerar modelos y sus acciones soportadas. urlGemini Models APIhttps://ai.google.dev/api/models?hl=es-419
+- **Computer Use visual**: captura puntual de pantalla, clic, movimiento, escritura, atajos y espera.
+- **OODA acotado**: observa, decide, actúa y vuelve a observar para corregir el siguiente paso.
+- Puede trabajar dentro de aplicaciones y webs visibles cuando la interfaz está disponible.
+- Preflight para abrir aplicaciones conocidas antes de una misión visual compleja.
+- Confirmación humana antes de enviar/publicar/comprar/eliminar o ejecutar acciones externas/destructivas.
+- Confirmación pendiente reanudable con órdenes como `sí envíalo` o cancelación.
+- Escritura Unicode mediante pegado visible para texto con tildes y caracteres españoles.
+- Voz con reconocimiento y TTS local/compatible.
+- Memoria local sin guardar contraseñas, cookies, tokens ni claves API.
+- Mission Control nativo Tkinter con telemetría, arquitectura, OODA, eventos, aprendizaje y consola interactiva.
+- **Neural Lab**: crea y entrena pequeños MLP locales, mide pérdida/accuracy y guarda los pesos en `data/neural_lab/`. No modifica el código de JARVIS ni se sustituye a sí mismo silenciosamente.
 
-Puedes dar órdenes naturales como:
+La API estándar de generación de Gemini se usa mediante `client.models.generate_content(...)`. urlGemini Generate Contenthttps://ai.google.dev/api/generate-content
 
-- `abre Teams personal`
-- `abre Teams y busca a Majo`
-- `abre Google y busca noticias de tecnología`
-- `entra a esta web y pulsa el botón que dice continuar`
-- `abre la aplicación y rellena el formulario`
-- `haz esto dentro de la aplicación`
-- `mira la pantalla y dime qué aparece`
-
-Para una tarea visual, el agente puede realizar hasta un número limitado de ciclos. Si no puede identificar con seguridad un elemento, se detiene en lugar de hacer clic a ciegas.
-
-Las acciones externas —enviar mensajes, correos, publicar, comprar o acciones destructivas— quedan detrás de confirmación humana.
-
-## Teams
-
-`Teams` personal es el comportamiento predeterminado. Las palabras `educativo`, `colegio`, `escuela` o `institucional` seleccionan Teams educativo.
-
-Ejemplo:
+## Comandos de ejemplo
 
 ```text
-entra a Teams personal, busca a Majo G y escríbele hola
-```
-
-JARVIS prepara el mensaje y espera una confirmación antes de enviarlo.
-
-## Visión
-
-```text
+revisa mi pc
+abre chrome
+abre teams personal
 mira la pantalla
+abre chrome y busca documentación de Python
+entra a Teams, busca a Majo G y escribe hola
+sí envíalo
+crea una red neuronal
+estado del neural lab
+usa ollama
+usa gemini
+esfuerzo alto
+limpiar conversación
 ```
 
-captura una imagen puntual y la analiza con Gemini. La captura no se realiza continuamente.
+Para una tarea visual compleja, JARVIS debe tener la aplicación o página visible. Si una misión necesita enviar algo, la ejecución se detiene antes de la acción externa y solicita confirmación.
 
-## Voz
+## Aprendizaje neuronal
 
-`faster-whisper` procesa la entrada localmente. `pyttsx3` funciona como salida de voz local. ElevenLabs queda como opción, no como requisito.
+El Neural Lab es un componente experimental separado. Por ejemplo:
 
-## Gemini
-
-Configura `.env`:
-
-```env
-JARVIS_PROVIDER=gemini
-GEMINI_API_KEY=tu_clave
-GEMINI_MODEL=gemini-2.5-flash
+```text
+Tú: crea una red neuronal
+JARVIS: Neural Lab completado. Arquitectura [2, 8, 8, 2] ...
 ```
 
-JARVIS consulta los modelos disponibles para la clave y evita depender de un modelo antiguo que ya no exista.
+Esto permite experimentar con redes entrenables sin convertir el propio código del agente en un objetivo de auto-modificación. En una siguiente fase se pueden añadir datasets locales, validación, checkpoints, métricas y modelos especializados sin poner el runtime principal en riesgo.
 
-## Ollama
+## Seguridad operacional
 
-```env
-JARVIS_PROVIDER=ollama
-OLLAMA_HOST=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3.2
-```
+El agente está diseñado para automatizar la interfaz visible, no para actuar como malware. No incluye keylogging oculto, captura de credenciales, robo de cookies/tokens, vigilancia continua de pantalla ni ejecución arbitraria de shell desde el modelo.
 
-Ollama funciona como proveedor local del mismo agente, no como otro agente.
-
-## Instalación
-
-```bat
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -r requirements.txt
-```
-
-Copia `.env.example` a `.env` y completa la clave de Gemini si vas a usar Gemini.
-
-## Ejecutar en Windows
-
-```bat
-cd C:\Users\juans\Desktop\Jarvis-main
-py main.py
-```
-
-No uses `py mainpy`: el archivo se llama `main.py`.
+Las acciones de comunicación y las acciones destructivas requieren una compuerta de confirmación explícita.
 
 ## Estructura principal
 
 ```text
+main.py
 src/jarvis/
-├── brain.py              # Gemini/Ollama + visión
-├── computer_use.py       # mouse, teclado y capturas visibles
-├── computer_agent.py     # OODA visual para actuar dentro de apps/webs
-├── command_router.py     # herramientas deterministas
-├── agent_protocol.py     # confirmaciones y límites
-├── agent_orchestrator.py # planificación
-├── reasoning_layer.py    # esfuerzo y verificación
-├── task_planner.py       # planes de tareas
-├── teams_automation.py   # Teams visible
-├── voice_engine.py       # voz
-├── memory.py             # memoria local
-└── hud_v4.py             # Mission Control Tkinter
+├── brain.py             # Gemini/Ollama
+├── command_router.py    # herramientas deterministas
+├── computer_use.py      # control visible del escritorio
+├── computer_agent.py    # bucle visual OODA
+├── neural_lab.py        # redes neuronales locales experimentales
+├── hud_v5.py            # Mission Control interactivo
+├── memory.py            # memoria local
+├── system_control.py    # Windows
+├── teams_automation.py  # Teams
+├── reasoning_layer.py   # esfuerzo/verificación
+├── agent_protocol.py    # política de riesgo
+└── voice_engine.py      # voz
 ```
 
-## Inspiración
+## Instalación
 
-La arquitectura toma ideas generales de asistentes agentic: pipeline de herramientas, visión, memoria, rutinas, auditoría, aprobaciones y una interfaz Mission Control. No se copian código, assets ni texto propietario de terceros.
+En Windows:
 
-La referencia de Jarvis AI Assistant destaca precisamente un flujo de intención → herramientas → progreso → aprobación → resultado, además de Computer Use, navegador, memoria y rutinas. citeturn0view0
+```bat
+py -m venv .venv
+.venv\Scripts\activate
+py -m pip install -r requirements.txt
+copy .env.example .env
+py main.py
+```
 
-El proyecto clásico de Jarvis para Linux también sirve como referencia histórica de un asistente Python orientado a ejecutar tareas del PC y ampliar funcionalidades mediante módulos. citeturn1view0
+Configura `GEMINI_API_KEY` en `.env` si quieres Gemini. No pegues la clave en el chat ni la subas a GitHub.
 
-## Seguridad
+## Importante sobre el error de `ControlLoop`
 
-No se implementa vigilancia oculta, captura de credenciales, registro de teclas ni ejecución de shell arbitrario generado por el modelo. Las acciones externas y destructivas requieren aprobación explícita.
+Si aparece un traceback que menciona rutas como `src\\jarvis\\execution\\loop.py` o `src\\jarvis\\core\\runtime.py`, estás ejecutando una copia local antigua de JARVIS. La arquitectura actual usa `src/jarvis/execution.py` y no importa el runtime desde `src/jarvis/__init__.py`.
+
+Después de actualizar el proyecto, la prueba de arranque debe hacerse desde la carpeta que contiene el `main.py` actual:
+
+```bat
+cd C:\Users\juans\Desktop\Jarvis
+py main.py
+```
+
+Si tu carpeta local conserva archivos antiguos, reemplaza la carpeta por la versión actual del repositorio en vez de mezclar los árboles `core/`, `execution/` y `providers/` antiguos con `src/jarvis/` actual.
