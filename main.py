@@ -37,6 +37,7 @@ class Jarvis:
         self.hud.add_message("SYSTEM", f"JARVIS ONLINE // CORE {self.brain.provider.upper()} // COMPUTER USE + VISION + OODA")
         self.hud.update_provider()
         threading.Thread(target=self.voice.speak, args=("JARVIS iniciado. Te escucho.",), daemon=True).start()
+        threading.Thread(target=self.run_voice_loop, daemon=True, name="jarvis-voice-loop").start()
         self.hud.run()
 
     def _agent_step(self, step) -> None:
@@ -88,7 +89,6 @@ class Jarvis:
                     self.respond(str(exc))
                 return
 
-            # Visión puntual: captura real de la pantalla + Gemini multimodal.
             if lowered in {"mira la pantalla", "observa la pantalla", "captura la pantalla", "analiza la pantalla", "qué hay en mi pantalla", "que hay en mi pantalla"}:
                 if self.hud:
                     self.hud.set_state("OBSERVANDO")
