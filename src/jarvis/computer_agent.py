@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from .agent_protocol import AgentProtocol, RiskLevel
-from .computer_use import ComputerUse
+from .computer_use import ComputerUse, ScreenObservation
 
 
 @dataclass
@@ -26,17 +27,31 @@ class ComputerAction:
 
 
 class ComputerAgent:
-    """Controlador visual OODA para tareas dentro de aplicaciones y webs."""
+    """Agente visual OODA para controlar el escritorio de forma visible.
+
+    Cada ciclo observa, decide una sola acción, la ejecuta y vuelve a observar.
+    La misión puede detenerse inmediatamente desde la interfaz.
+    """
 
     ACTIONS = {"click", "double_click", "move", "scroll", "drag", "type", "hotkey", "wait", "done", "ask_confirmation"}
 
-    def __init__(self, brain, computer: ComputerUse, protocol: AgentProtocol, event: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        brain,
+        computer: ComputerUse,
+        protocol: AgentProtocol,
+        event: Callable[[str], None] | None = None,
+        observation: Callable[[ScreenObservation], None] | None = None,
+    ) -> None:
         self.brain = brain
         self.computer = computer
         self.protocol = protocol
         self.event = event or (lambda _message: None)
+        self.observation_callback = observation or (lambda _observation: None)
         self.pending_task: str | None = None
         self.pending_reason: str = ""
+        self._stop_event = threading.Event()
+        self._running = threading.Event()
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any] | None:
@@ -53,15 +68,17 @@ class ComputerAgent:
         prompt = f"""Actúa como controlador visual de Windows. Tienes una captura actual y una tarea del usuario.
 Devuelve SOLO JSON válido:
 {{"action":"click|double_click|move|scroll|drag|type|hotkey|wait|done|ask_confirmation","x":0,"y":0,"x2":0,"y2":0,"amount":0,"text":"","keys":[],"button":"left","target":"texto visible del objetivo","reason":"breve"}}
-Reglas estrictas:
-- Usa coordenadas de la captura; nunca inventes coordenadas.
-- Una acción por ciclo y después vuelve a observar.
-- target describe el control visible que vas a tocar/escribir.
-- Usa scroll para desplazarte, drag para mover objetos, double_click para abrir elementos.
-- Si necesitas enviar, publicar, comprar, confirmar una operación externa, eliminar datos o realizar una acción irreversible, usa ask_confirmation ANTES de esa acción.
-- Si approval_granted=true, puedes ejecutar la acción externa que acabas de pedir confirmar, pero no inventes una acción diferente.
-- No pidas ni copies contraseñas, códigos de autenticación, cookies o claves.
-- No ejecutes comandos de terminal.
+
+REGLAS:
+- Las coordenadas deben corresponder a la captura actual. Nunca inventes coordenadas.
+- Haz UNA acción por ciclo y después vuelve a observar.
+- target debe identificar el control visible que vas a usar.
+- Si una operación envía/publica/compra/confirma algo externamente o elimina datos, usa ask_confirmation ANTES.
+- Si approval_granted=true, ejecuta únicamente la operación externa que acabas de solicitar.
+- No solicites ni copies contraseñas, códigos de autenticación, cookies, tokens ni claves API.
+- No uses terminal ni comandos de shell.
+- Si la pantalla no contiene lo necesario, usa scroll, espera o done con una explicación; no adivines.
+
 TAREA: {task}
 APROBACIÓN EXPLÍCITA: {approval_granted}
 ACCIONES PREVIAS: {history[-8:]}
@@ -80,7 +97,7 @@ ACCIONES PREVIAS: {history[-8:]}
                 y=int(data["y"]) if data.get("y") is not None else None,
                 x2=int(data["x2"]) if data.get("x2") is not None else None,
                 y2=int(data["y2"]) if data.get("y2") is not None else None,
-                amount=int(data.get("amount", 0) or 0),
+                amount=max(-12, min(12, int(data.get("amount", 0) or 0))),
                 text=str(data.get("text", "")),
                 keys=[str(k) for k in (data.get("keys") or [])],
                 button=str(data.get("button", "left")),
@@ -101,53 +118,72 @@ ACCIONES PREVIAS: {history[-8:]}
         task = task.strip()
         if not task:
             return "No recibí una tarea visual."
+        self._stop_event.clear()
+        self._running.set()
         history: list[str] = []
-        for step in range(1, max_steps + 1):
-            observation = self.computer.observe()
-            if not observation.image_base64:
-                return observation.note
-            self.event(f"OODA {step}/{max_steps} • OBSERVE {observation.width}x{observation.height}")
-            action = self._decide(task, observation.image_base64, history, approval_granted)
-            if action is None:
-                return "La decisión visual no fue válida. Detuve la misión para evitar una acción a ciegas."
-            if self._needs_confirmation(task, action) and not approval_granted:
-                self.pending_task = task
-                self.pending_reason = action.reason or action.target or "acción externa"
-                self.event(f"HUMAN GATE • {self.pending_reason}")
-                return f"CONFIRMACIÓN NECESARIA: {self.pending_reason}. Di 'sí, envíalo' para continuar o 'no' para cancelar."
+        try:
+            for step in range(1, max_steps + 1):
+                if self._stop_event.is_set():
+                    return "Misión detenida por el usuario."
 
-            self.event(f"OODA {step}/{max_steps} • ACT {action.action} {action.target or action.reason}".strip())
-            if action.action == "done":
-                self.pending_task = None
-                self.pending_reason = ""
-                return action.reason or "Tarea completada y verificada."
-            if action.action == "click" and action.x is not None and action.y is not None:
-                result = self.computer.click(action.x, action.y, action.button)
-            elif action.action == "double_click" and action.x is not None and action.y is not None:
-                result = self.computer.double_click(action.x, action.y)
-            elif action.action == "move" and action.x is not None and action.y is not None:
-                result = self.computer.move(action.x, action.y)
-            elif action.action == "scroll":
-                result = self.computer.scroll(action.amount or 1)
-            elif action.action == "drag" and None not in (action.x, action.y, action.x2, action.y2):
-                result = self.computer.drag(action.x, action.y, action.x2, action.y2)
-            elif action.action == "type":
-                result = self.computer.type_text(action.text)
-            elif action.action == "hotkey":
-                result = self.computer.hotkey(*(action.keys or []))
-            elif action.action == "wait":
-                time.sleep(min(3.0, max(0.2, float(action.text or 1))))
-                result = "Esperé y volveré a observar."
-            elif action.action == "ask_confirmation":
-                self.pending_task = task
-                self.pending_reason = action.reason or action.target or "acción externa"
-                return f"CONFIRMACIÓN NECESARIA: {self.pending_reason}. Di 'sí, envíalo' para continuar o 'no' para cancelar."
-            else:
-                return "Acción visual no soportada."
-            history.append(f"{action.action} [{action.target}]: {result}")
-            self.event(f"OODA {step}/{max_steps} • RESULT {result}")
-            time.sleep(0.25)
-        return "Alcancé el límite de ciclos visuales sin confirmar que la tarea terminara."
+                observation = self.computer.observe()
+                self.observation_callback(observation)
+                if not observation.image_base64:
+                    return observation.note
+                self.event(f"OODA {step}/{max_steps} • OBSERVE {observation.width}x{observation.height}")
+
+                if self._stop_event.is_set():
+                    return "Misión detenida por el usuario."
+                action = self._decide(task, observation.image_base64, history, approval_granted)
+                if action is None:
+                    return "La decisión visual no fue válida. Detuve la misión para evitar una acción a ciegas."
+
+                if self._needs_confirmation(task, action) and not approval_granted:
+                    self.pending_task = task
+                    self.pending_reason = action.reason or action.target or "acción externa"
+                    self.event(f"HUMAN GATE • {self.pending_reason}")
+                    return f"CONFIRMACIÓN NECESARIA: {self.pending_reason}. Di 'sí, envíalo' para continuar o 'no' para cancelar."
+
+                self.event(f"OODA {step}/{max_steps} • ACT {action.action} {action.target or action.reason}".strip())
+                if action.action == "done":
+                    self.pending_task = None
+                    self.pending_reason = ""
+                    return action.reason or "Tarea completada y verificada."
+                if action.action == "click" and action.x is not None and action.y is not None:
+                    result = self.computer.click(action.x, action.y, action.button)
+                elif action.action == "double_click" and action.x is not None and action.y is not None:
+                    result = self.computer.double_click(action.x, action.y)
+                elif action.action == "move" and action.x is not None and action.y is not None:
+                    result = self.computer.move(action.x, action.y)
+                elif action.action == "scroll":
+                    result = self.computer.scroll(action.amount or 1)
+                elif action.action == "drag" and None not in (action.x, action.y, action.x2, action.y2):
+                    result = self.computer.drag(action.x, action.y, action.x2, action.y2)
+                elif action.action == "type":
+                    result = self.computer.type_text(action.text)
+                elif action.action == "hotkey":
+                    result = self.computer.hotkey(*(action.keys or []))
+                elif action.action == "wait":
+                    time.sleep(min(3.0, max(0.2, float(action.text or 1))))
+                    result = "Esperé y volveré a observar."
+                elif action.action == "ask_confirmation":
+                    self.pending_task = task
+                    self.pending_reason = action.reason or action.target or "acción externa"
+                    return f"CONFIRMACIÓN NECESARIA: {self.pending_reason}. Di 'sí, envíalo' para continuar o 'no' para cancelar."
+                else:
+                    return "Acción visual no soportada."
+
+                history.append(f"{action.action} [{action.target}]: {result}")
+                self.event(f"OODA {step}/{max_steps} • RESULT {result}")
+                time.sleep(0.20)
+            return "Alcancé el límite de ciclos visuales sin confirmar que la tarea terminara."
+        finally:
+            self._running.clear()
+
+    def stop(self) -> None:
+        """Solicita detener el ciclo actual; es seguro llamarlo desde otro hilo."""
+        self._stop_event.set()
+        self.event("MISSION STOP • solicitud de parada recibida")
 
     def confirm(self, accepted: bool) -> str:
         task = self.pending_task
@@ -164,3 +200,7 @@ ACCIONES PREVIAS: {history[-8:]}
     @property
     def has_pending(self) -> bool:
         return bool(self.pending_task)
+
+    @property
+    def is_running(self) -> bool:
+        return self._running.is_set()
