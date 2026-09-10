@@ -61,7 +61,7 @@ HABLA EN ESPAÑOL cuando el usuario hable español.
 @dataclass
 class BrainConfig:
     provider: str = os.getenv("JARVIS_PROVIDER", "gemini").strip().lower()
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
     timeout: int = int(os.getenv("JARVIS_AI_TIMEOUT", "120"))
@@ -73,6 +73,7 @@ class JarvisBrain:
     """Un solo cerebro con Gemini primario, Ollama de respaldo y memoria persistente local."""
 
     MODEL_PREFERENCE = (
+        "gemini-3.6-flash", "gemini-3.6-flash-lite", "gemini-3.5-flash",
         "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-lite",
     )
 
@@ -89,7 +90,6 @@ class JarvisBrain:
         return self.config.provider
 
     def _reload_environment(self) -> None:
-        """Vuelve a cargar el .env para detectar cambios hechos antes de una misión."""
         if load_dotenv:
             load_dotenv(dotenv_path=_ENV_FILE, override=False)
 
@@ -139,7 +139,6 @@ class JarvisBrain:
         return bool(os.getenv("GEMINI_API_KEY", "").strip()) and genai is not None
 
     def gemini_diagnostic(self) -> str:
-        """Diagnóstico seguro para resolver el CORE OFFLINE sin revelar la clave."""
         self._reload_environment()
         key = os.getenv("GEMINI_API_KEY", "").strip()
         env_status = "encontrado" if _ENV_FILE.is_file() else "NO encontrado"
