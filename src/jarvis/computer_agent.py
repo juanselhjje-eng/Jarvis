@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -55,6 +56,8 @@ class ComputerAgent:
         self.pending_reason: str = ""
         self._stop_event = threading.Event()
         self._running = threading.Event()
+        self._last_observation_hash: str | None = None
+        self._last_action_signature: str | None = None
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any] | None:
@@ -67,7 +70,32 @@ class ComputerAgent:
         except json.JSONDecodeError:
             return None
 
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return re.sub(r"\s+", " ", text.lower().strip())
+
+    @classmethod
+    def _requested_contact(cls, task: str) -> str | None:
+        """Extrae un contacto explícito de órdenes tipo 'a la que se llama Majo G'."""
+        patterns = (
+            r"(?:a la que se llama|al que se llama|que se llama|se llama)\s+([\wáéíóúüñÁÉÍÓÚÜÑ]+(?:\s+[\wáéíóúüñÁÉÍÓÚÜÑ]+){0,3})",
+            r"(?:contacto|persona)\s+(?:llamad[oa]\s+)?([\wáéíóúüñÁÉÍÓÚÜÑ]+(?:\s+[\wáéíóúüñÁÉÍÓÚÜÑ]+){0,3})",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, task, flags=re.IGNORECASE)
+            if match:
+                value = re.split(r"\s+(?:y|para|dile|escribe|envía|enviale|mándale|mandale)\b", match.group(1), maxsplit=1, flags=re.IGNORECASE)[0].strip(" ,.;:")
+                if value:
+                    return value
+        return None
+
     def _decide(self, task: str, image_base64: str, history: list[str], approval_granted: bool) -> ComputerAction | None:
+        requested_contact = self._requested_contact(task)
+        contact_rule = (
+            f"- CONTACTO OBJETIVO EXACTO: {requested_contact}. Si vas a seleccionar un chat, target debe contener este nombre exacto (ignorando mayúsculas/minúsculas). Nunca selecciones otro contacto parecido. Si no aparece, NO hagas clic en otro nombre; usa búsqueda/scroll o done explicando que no está visible."
+            if requested_contact
+            else "- Si la tarea menciona un contacto, respeta exactamente ese nombre y no lo sustituyas por otro parecido."
+        )
         prompt = f"""Actúa como controlador visual de Windows. Tienes una captura actual y una tarea del usuario.
 Devuelve SOLO JSON válido:
 {{"action":"click|double_click|move|scroll|drag|type|hotkey|wait|done|ask_confirmation","x":0,"y":0,"x2":0,"y2":0,"amount":0,"text":"","keys":[],"button":"left","target":"texto visible del objetivo","reason":"breve"}}
@@ -76,6 +104,9 @@ REGLAS:
 - Las coordenadas deben corresponder a la captura actual. Nunca inventes coordenadas.
 - Haz UNA acción por ciclo y después vuelve a observar.
 - target debe identificar el control visible que vas a usar.
+{contact_rule}
+- Después de seleccionar un contacto, verifica en la siguiente captura que el chat abierto corresponde al contacto exacto antes de considerar la navegación completada.
+- Si la captura actual ya muestra el contacto exacto abierto, NO vuelvas a hacer clic sobre el mismo chat: usa done si la parte de navegación está terminada o continúa con el siguiente paso.
 - Si una operación envía/publica/compra/confirma algo externamente o elimina datos, usa ask_confirmation ANTES.
 - Si approval_granted=true, ejecuta únicamente la operación externa que acabas de solicitar.
 - No solicites ni copies contraseñas, códigos de autenticación, cookies, tokens ni claves API.
@@ -111,6 +142,34 @@ ACCIONES PREVIAS: {history[-8:]}
             self.event(f"VISION ERROR: {exc}")
             return None
 
+    def _validate_contact_action(self, task: str, action: ComputerAction) -> bool:
+        """Bloquea clics sobre otro nombre cuando la orden tiene un contacto explícito."""
+        if action.action not in {"click", "double_click"}:
+            return True
+        contact = self._requested_contact(task)
+        if not contact:
+            return True
+        target = self._normalize(action.target)
+        wanted = self._normalize(contact)
+        if wanted not in target:
+            self.event(f"CONTACT GUARD • BLOQUEADO • objetivo '{action.target}' no coincide con '{contact}'")
+            return False
+        return True
+
+    def _is_duplicate_click(self, observation: ScreenObservation, action: ComputerAction) -> bool:
+        if action.action not in {"click", "double_click"}:
+            return False
+        signature = f"{action.action}:{action.x}:{action.y}:{self._normalize(action.target)}"
+        screen_hash = hashlib.sha256(observation.image_base64.encode("utf-8")).hexdigest() if observation.image_base64 else None
+        duplicate = screen_hash == self._last_observation_hash and signature == self._last_action_signature
+        if duplicate:
+            self.event("VISION GUARD • BLOQUEADO • mismo clic sobre la misma pantalla")
+        return duplicate
+
+    def _remember_action(self, observation: ScreenObservation, action: ComputerAction) -> None:
+        self._last_observation_hash = hashlib.sha256(observation.image_base64.encode("utf-8")).hexdigest() if observation.image_base64 else None
+        self._last_action_signature = f"{action.action}:{action.x}:{action.y}:{self._normalize(action.target)}" if action.action in {"click", "double_click"} else None
+
     def _needs_confirmation(self, task: str, action: ComputerAction) -> bool:
         if action.action == "ask_confirmation":
             return True
@@ -134,6 +193,8 @@ ACCIONES PREVIAS: {history[-8:]}
             return "No recibí una tarea visual."
         self._stop_event.clear()
         self._running.set()
+        self._last_observation_hash = None
+        self._last_action_signature = None
         history: list[str] = []
         try:
             for step in range(1, max_steps + 1):
@@ -150,6 +211,13 @@ ACCIONES PREVIAS: {history[-8:]}
                 action = self._decide(task, observation.image_base64, history, approval_granted)
                 if action is None:
                     return "La decisión visual no fue válida. Detuve la misión para evitar una acción a ciegas."
+
+                if not self._validate_contact_action(task, action):
+                    history.append(f"GUARD: bloqueé {action.action} hacia '{action.target}' porque no coincide con el contacto solicitado.")
+                    continue
+                if self._is_duplicate_click(observation, action):
+                    history.append(f"GUARD: bloqueé clic repetido sobre '{action.target}'.")
+                    continue
 
                 if self._needs_confirmation(task, action) and not approval_granted:
                     self.pending_task = task
@@ -186,6 +254,7 @@ ACCIONES PREVIAS: {history[-8:]}
                 else:
                     return "Acción visual no soportada."
 
+                self._remember_action(observation, action)
                 history.append(f"{action.action} [{action.target}]: {result}")
                 self.event(f"OODA {step}/{max_steps} • RESULT {result}")
                 time.sleep(0.20)
