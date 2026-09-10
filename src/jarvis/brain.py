@@ -24,13 +24,10 @@ except ImportError as exc:
     types = None
     _GENAI_IMPORT_ERROR = str(exc)
 
-# Carga .env desde la raíz del proyecto, no solamente desde el directorio actual.
-# Esto evita que `py main.py` falle si se ejecuta desde otra carpeta.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _PROJECT_ROOT / ".env"
 if load_dotenv:
     load_dotenv(dotenv_path=_ENV_FILE, override=False)
-
 
 SYSTEM_PROMPT = """
 Eres J.A.R.V.I.S., un único agente personal para Windows.
@@ -61,7 +58,6 @@ continua ni captures credenciales, contraseñas, cookies, tokens o claves API.
 HABLA EN ESPAÑOL cuando el usuario hable español.
 """.strip()
 
-
 @dataclass
 class BrainConfig:
     provider: str = os.getenv("JARVIS_PROVIDER", "gemini").strip().lower()
@@ -72,7 +68,6 @@ class BrainConfig:
     ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
     max_history_messages: int = int(os.getenv("JARVIS_MAX_HISTORY_MESSAGES", "12"))
     max_memory_items: int = int(os.getenv("JARVIS_MAX_MEMORY_ITEMS", "8"))
-
 
 class JarvisBrain:
     """Un solo cerebro con Gemini primario, Ollama de respaldo y memoria persistente local."""
@@ -93,12 +88,18 @@ class JarvisBrain:
     def provider(self) -> str:
         return self.config.provider
 
+    def _reload_environment(self) -> None:
+        """Vuelve a cargar el .env para detectar cambios hechos antes de una misión."""
+        if load_dotenv:
+            load_dotenv(dotenv_path=_ENV_FILE, override=False)
+
     def _gemini_client(self):
+        self._reload_environment()
         if self._gemini is not None:
             return self._gemini
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
-            raise RuntimeError(f"GEMINI_API_KEY no fue cargada desde { _ENV_FILE }. Revisa que exista .env y que la variable tenga un valor.")
+            raise RuntimeError(f"GEMINI_API_KEY no fue cargada desde {_ENV_FILE}. Revisa que exista .env y que la variable tenga un valor.")
         if genai is None:
             detail = f" Detalle de importación: {_GENAI_IMPORT_ERROR}" if _GENAI_IMPORT_ERROR else ""
             raise RuntimeError(f"google-genai no está disponible en este Python.{detail}")
@@ -134,16 +135,20 @@ class JarvisBrain:
             return configured
 
     def gemini_available(self) -> bool:
+        self._reload_environment()
         return bool(os.getenv("GEMINI_API_KEY", "").strip()) and genai is not None
 
     def gemini_diagnostic(self) -> str:
-        """Diagnóstico seguro: nunca muestra la clave completa."""
+        """Diagnóstico seguro para resolver el CORE OFFLINE sin revelar la clave."""
+        self._reload_environment()
         key = os.getenv("GEMINI_API_KEY", "").strip()
+        env_status = "encontrado" if _ENV_FILE.is_file() else "NO encontrado"
+        python_status = f"Python: {os.sys.executable}"
         if not key:
-            return f"GEMINI_API_KEY no está cargada. Archivo esperado: {_ENV_FILE}"
+            return f"Gemini: OFFLINE | .env: {env_status} ({_ENV_FILE}) | GEMINI_API_KEY: NO detectada | {python_status}"
         if genai is None:
-            return f"La API key sí fue detectada, pero google-genai no está disponible. {_GENAI_IMPORT_ERROR}".strip()
-        return f"Gemini configurado correctamente. Modelo solicitado: {self.config.gemini_model}. Clave detectada ({len(key)} caracteres)."
+            return f"Gemini: OFFLINE | .env: {env_status} | GEMINI_API_KEY: detectada ({len(key)} caracteres) | google-genai: NO disponible | {_GENAI_IMPORT_ERROR} | {python_status}"
+        return f"Gemini: CONFIGURADO | .env: {env_status} | GEMINI_API_KEY: detectada ({len(key)} caracteres) | google-genai: disponible | modelo solicitado: {self.config.gemini_model} | {python_status}"
 
     def ollama_available(self) -> bool:
         try:
@@ -195,7 +200,6 @@ class JarvisBrain:
         return str(getattr(response, "text", "") or "").strip()
 
     def analyze_screen(self, image_base64: str, task: str = "Analiza la pantalla.") -> str:
-        """Analiza una captura puntual y añade memoria relevante al objetivo."""
         if not image_base64:
             return "No recibí una captura válida."
         try:
